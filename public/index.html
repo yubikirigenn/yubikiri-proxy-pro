@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Yubikiri Proxy Pro</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+      background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+      color: #ffffff;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* トップバー（ページ表示時用） */
+    .top-bar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 60px;
+      background: rgba(15, 12, 41, 0.95);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      display: flex;
+      align-items: center;
+      padding: 0 24px;
+      z-index: 1000;
+      gap: 12px;
+      transform: translateY(-100%);
+      transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .top-bar.visible {
+      transform: translateY(0);
+    }
+
+    .top-bar .logo {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .top-bar input {
+      flex: 1;
+      padding: 12px 16px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 6px;
+      font-size: 13px;
+      background-color: rgba(255, 255, 255, 0.08);
+      color: #ffffff;
+      transition: all 0.3s ease;
+      backdrop-filter: blur(10px);
+    }
+
+    .top-bar input::placeholder {
+      color: rgba(255, 255, 255, 0.4);
+    }
+
+    .top-bar input:focus {
+      outline: none;
+      background-color: rgba(255, 255, 255, 0.12);
+      border-color: rgba(102, 126, 234, 0.5);
+      box-shadow: 0 0 20px rgba(102, 126, 234, 0.2);
+    }
+
+    .top-bar button {
+      padding: 10px 24px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: #ffffff;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      transition: all 0.3s ease;
+      box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+    }
+
+    .top-bar button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
+    }
+
+    .top-bar button:active {
+      transform: translateY(0);
+    }
+
+    /* メイン画面 */
+    .main-container {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      padding: 60px 20px 20px;
+    }
+
+    .center-box {
+      text-align: center;
+      max-width: 700px;
+      width: 100%;
+    }
+
+    .title {
+      font-size: 64px;
+      font-weight: 700;
+      margin-bottom: 8px;
+      letter-spacing: -1px;
+      background: linear-gradient(135deg, #ffffff 0%, rgba(255, 255, 255, 0.8) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .pro-badge {
+      display: inline-block;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 6px 18px;
+      border-radius: 20px;
+      font-size: 11px;
+      margin-left: 12px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+    }
+
+    .subtitle {
+      font-size: 16px;
+      color: rgba(255, 255, 255, 0.6);
+      margin-top: 24px;
+      letter-spacing: 0.5px;
+    }
+
+    /* 入力エリア */
+    .input-group {
+      display: flex;
+      gap: 12px;
+      margin-top: 48px;
+      align-items: center;
+    }
+
+    .input-group input {
+      flex: 1;
+      padding: 16px 20px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      background-color: rgba(255, 255, 255, 0.08);
+      color: #ffffff;
+      border-radius: 8px;
+      font-size: 15px;
+      transition: all 0.3s ease;
+      backdrop-filter: blur(10px);
+    }
+
+    .input-group input::placeholder {
+      color: rgba(255, 255, 255, 0.3);
+    }
+
+    .input-group input:focus {
+      outline: none;
+      background-color: rgba(255, 255, 255, 0.12);
+      border-color: rgba(102, 126, 234, 0.5);
+      box-shadow: 0 0 30px rgba(102, 126, 234, 0.25);
+    }
+
+    .input-group button {
+      padding: 16px 48px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: #ffffff;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      transition: all 0.3s ease;
+      box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);
+      white-space: nowrap;
+    }
+
+    .input-group button:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 12px 35px rgba(102, 126, 234, 0.4);
+    }
+
+    .input-group button:active {
+      transform: translateY(-1px);
+    }
+
+    /* コンテンツエリア */
+    .content-container {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: #ffffff;
+      overflow-y: auto;
+      overflow-x: hidden;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s ease;
+    }
+
+    .content-container.active {
+      opacity: 1;
+      pointer-events: all;
+    }
+
+    .content-wrapper {
+      width: 100%;
+      min-height: 100%;
+      padding-top: 60px;
+    }
+
+    /* ローディング */
+    .loading-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: rgba(0, 0, 0, 0.6);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 2000;
+      backdrop-filter: blur(5px);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s ease;
+    }
+
+    .loading-overlay.active {
+      opacity: 1;
+      pointer-events: all;
+    }
+
+    .spinner {
+      border: 4px solid rgba(255, 255, 255, 0.2);
+      border-top: 4px solid #667eea;
+      border-radius: 50%;
+      width: 50px;
+      height: 50px;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    /* エラー */
+    .error-overlay {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: linear-gradient(135deg, rgba(15, 12, 41, 0.95), rgba(48, 43, 99, 0.95));
+      backdrop-filter: blur(10px);
+      padding: 40px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      z-index: 2001;
+      text-align: center;
+      max-width: 400px;
+      display: none;
+    }
+
+    .error-overlay.active {
+      display: block;
+    }
+
+    .error-overlay h2 {
+      color: #ff6b6b;
+      margin-bottom: 12px;
+      font-size: 20px;
+    }
+
+    .error-overlay p {
+      color: rgba(255, 255, 255, 0.7);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .error-overlay button {
+      margin-top: 24px;
+      padding: 12px 28px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 600;
+      transition: all 0.3s ease;
+      font-size: 13px;
+    }
+
+    .error-overlay button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
+    }
+
+    /* バックボタン */
+    .back-button {
+      position: fixed;
+      top: 80px;
+      left: 24px;
+      z-index: 999;
+      background: rgba(102, 126, 234, 0.2);
+      color: #667eea;
+      border: 1px solid rgba(102, 126, 234, 0.3);
+      padding: 10px 20px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      opacity: 0;
+      pointer-events: none;
+      transition: all 0.3s ease;
+      backdrop-filter: blur(10px);
+    }
+
+    .back-button.visible {
+      opacity: 1;
+      pointer-events: all;
+    }
+
+    .back-button:hover {
+      background: rgba(102, 126, 234, 0.3);
+      border-color: rgba(102, 126, 234, 0.5);
+      transform: translateX(-2px);
+    }
+
+    footer {
+      text-align: center;
+      padding: 24px;
+      color: rgba(255, 255, 255, 0.4);
+      font-size: 12px;
+      letter-spacing: 0.5px;
+    }
+  </style>
+</head>
+<body>
+  <!-- トップバー（ページ表示時） -->
+  <div class="top-bar" id="topBar">
+    <div class="logo">◆ PROXY</div>
+    <input 
+      type="text" 
+      id="urlInput" 
+      placeholder="表示したいページのURLを入力..." 
+      spellcheck="false"
+    >
+    <button id="goBtn">Go</button>
+  </div>
+
+  <!-- メイン画面 -->
+  <div class="main-container" id="mainContainer">
+    <div class="center-box">
+      <h1 class="title">Yubikiri Proxy<span class="pro-badge">Pro</span></h1>
+      <p class="subtitle">高速で安全なウェブプロキシサービス</p>
+      
+      <div class="input-group">
+        <input 
+          type="text" 
+          id="homeUrlInput" 
+          placeholder="表示したいページのURLを入力" 
+          spellcheck="false"
+        >
+        <button id="homeGoBtn">Go</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- コンテンツ表示エリア -->
+  <div class="content-container" id="contentContainer">
+    <div class="content-wrapper" id="contentWrapper"></div>
+  </div>
+
+  <!-- バックボタン -->
+  <button class="back-button" id="backButton">← ホーム</button>
+
+  <!-- ローディングオーバーレイ -->
+  <div class="loading-overlay" id="loadingOverlay">
+    <div class="spinner"></div>
+  </div>
+
+  <!-- エラーオーバーレイ -->
+  <div class="error-overlay" id="errorOverlay">
+    <h2>エラー</h2>
+    <p id="errorMessage"></p>
+    <button onclick="document.getElementById('errorOverlay').classList.remove('active')">閉じる</button>
+  </div>
+
+  <footer id="footer">
+    <p>&copy; 2025 Yubikiri Proxy Pro. All rights reserved.</p>
+  </footer>
+
+  <script>
+    const mainContainer = document.getElementById('mainContainer');
+    const homeUrlInput = document.getElementById('homeUrlInput');
+    const homeGoBtn = document.getElementById('homeGoBtn');
+    const topBar = document.getElementById('topBar');
+    const urlInput = document.getElementById('urlInput');
+    const goBtn = document.getElementById('goBtn');
+    const contentContainer = document.getElementById('contentContainer');
+    const contentWrapper = document.getElementById('contentWrapper');
+    const loadingOverlay = document.getElementById('loadingOverlay');
+    const errorOverlay = document.getElementById('errorOverlay');
+    const errorMessage = document.getElementById('errorMessage');
+    const backButton = document.getElementById('backButton');
+    const footer = document.getElementById('footer');
+
+    let barHideTimeout;
+    let isPageLoaded = false;
+
+    // ホーム画面での検索
+    homeUrlInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        goToProxy(homeUrlInput.value.trim());
+      }
+    });
+
+    homeGoBtn.addEventListener('click', () => {
+      goToProxy(homeUrlInput.value.trim());
+    });
+
+    // ページ表示時の検索
+    urlInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        goToProxy(urlInput.value.trim());
+      }
+    });
+
+    goBtn.addEventListener('click', () => {
+      goToProxy(urlInput.value.trim());
+    });
+
+    // バックボタン
+    backButton.addEventListener('click', goHome);
+
+    // マウスイベントでトップバーを表示/非表示
+    document.addEventListener('mousemove', (e) => {
+      if (!isPageLoaded) return;
+
+      if (e.clientY < 80) {
+        topBar.classList.add('visible');
+        clearTimeout(barHideTimeout);
+      } else {
+        barHideTimeout = setTimeout(() => {
+          if (document.activeElement !== urlInput) {
+            topBar.classList.remove('visible');
+          }
+        }, 2000);
+      }
+    });
+
+    // Input フォーカス時
+    urlInput.addEventListener('focus', () => {
+      topBar.classList.add('visible');
+      clearTimeout(barHideTimeout);
+    });
+
+    // Input ブラー時
+    urlInput.addEventListener('blur', () => {
+      barHideTimeout = setTimeout(() => {
+        topBar.classList.remove('visible');
+      }, 1000);
+    });
+
+    async function goToProxy(url) {
+      if (!url) {
+        showError('URLを入力してください');
+        return;
+      }
+
+      let fullUrl = url;
+      if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        fullUrl = 'https://' + url;
+      }
+
+      homeUrlInput.value = fullUrl;
+      urlInput.value = fullUrl;
+      loadingOverlay.classList.add('active');
+
+      try {
+        const response = await fetch('/api/proxy', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ url: fullUrl })
+        });
+
+        const data = await response.json();
+        loadingOverlay.classList.remove('active');
+
+        if (data.error) {
+          showError(data.error);
+        } else {
+          // メイン画面を非表示
+          mainContainer.style.display = 'none';
+          footer.style.display = 'none';
+          
+          // コンテンツを表示
+          isPageLoaded = true;
+          contentContainer.classList.add('active');
+          contentWrapper.innerHTML = data.content;
+          contentContainer.scrollTop = 0;
+
+          // バーを表示
+          topBar.classList.add('visible');
+          backButton.classList.add('visible');
+
+          // 自動で隠す
+          barHideTimeout = setTimeout(() => {
+            if (document.activeElement !== urlInput) {
+              topBar.classList.remove('visible');
+            }
+          }, 3000);
+        }
+      } catch (error) {
+        loadingOverlay.classList.remove('active');
+        showError('リクエスト失敗: ' + error.message);
+      }
+    }
+
+    function goHome() {
+      // ページロード状態をリセット
+      isPageLoaded = false;
+      
+      // UI要素をリセット
+      mainContainer.style.display = 'flex';
+      footer.style.display = 'block';
+      contentContainer.classList.remove('active');
+      topBar.classList.remove('visible');
+      backButton.classList.remove('visible');
+      contentWrapper.innerHTML = '';
+      
+      // 入力欄をクリア
+      homeUrlInput.value = '';
+      urlInput.value = '';
+      
+      // スクロール位置をリセット
+      contentContainer.scrollTop = 0;
+      
+      clearTimeout(barHideTimeout);
+    }
+
+    function showError(message) {
+      errorMessage.textContent = message;
+      errorOverlay.classList.add('active');
+    }
+  </script>
+</body>
+</html>
