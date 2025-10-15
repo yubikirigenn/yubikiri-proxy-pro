@@ -257,13 +257,16 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
                              parsedUrl.pathname.includes('/jot/') ||
                              parsedUrl.pathname.includes('/onboarding/') ||
                              parsedUrl.pathname.includes('/guest/') ||
+                             parsedUrl.pathname.includes('/2/') ||
+                             parsedUrl.pathname.startsWith('/i/api/') ||
                              parsedUrl.hostname.startsWith('api.') ||
                              // Google認証関連を追加
                              parsedUrl.hostname.includes('accounts.google.com') ||
                              parsedUrl.hostname.includes('googleapis.com') ||
                              parsedUrl.hostname.includes('gstatic.com') ||
                              parsedUrl.hostname.includes('google.com') && parsedUrl.pathname.includes('/o/oauth2/') ||
-                             (parsedUrl.hostname.includes('twitter.com') && parsedUrl.pathname.startsWith('/i/'));
+                             (parsedUrl.hostname.includes('twitter.com') && parsedUrl.pathname.startsWith('/i/')) ||
+                             (parsedUrl.hostname.includes('x.com') && parsedUrl.pathname.startsWith('/i/'));
     
     if (shouldDirectFetch) {
       // オリジナルのリクエストヘッダーを可能な限り保持
