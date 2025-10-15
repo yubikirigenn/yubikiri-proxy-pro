@@ -330,6 +330,23 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
     await page.setViewport({ width: 1920, height: 1080 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
+    // Google関連のリクエストをブロック
+    await page.setRequestInterception(true);
+    page.on('request', (request) => {
+      const requestUrl = request.url();
+      
+      // Google認証関連のリクエストをブロック
+      if (requestUrl.includes('accounts.google.com/gsi') ||
+          requestUrl.includes('gsi/client') ||
+          requestUrl.includes('accounts.google.com/o/oauth2') ||
+          requestUrl.includes('iframeresize.js')) {
+        console.log('🚫 Blocked Google GSI:', requestUrl);
+        request.abort();
+      } else {
+        request.continue();
+      }
+    });
+
     // Cookieを設定
     if (req.headers.cookie) {
       const cookies = req.headers.cookie.split(';').map(c => {
