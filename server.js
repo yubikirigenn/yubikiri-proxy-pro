@@ -364,33 +364,32 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
       await page.setCookie(...cookies).catch(() => {});
     }
 
+    // ページロード前にGoogle APIを無効化（重要：gotoの前に実行）
+    await page.evaluateOnNewDocument(() => {
+      // Google One Tap完全無効化
+      Object.defineProperty(window, 'google', {
+        value: {
+          accounts: {
+            id: {
+              initialize: function() { console.log('[Proxy] Google One Tap blocked'); },
+              prompt: function() { console.log('[Proxy] prompt blocked'); },
+              renderButton: function() {},
+              disableAutoSelect: function() {},
+              storeCredential: function() {},
+              cancel: function() {},
+              onGoogleLibraryLoad: function() {},
+              revoke: function() {}
+            }
+          }
+        },
+        writable: false,
+        configurable: false
+      });
+    });
+
     await page.goto(targetUrl, {
       waitUntil: 'networkidle2',
       timeout: 20000
-    }).catch(() => {});
-
-    // Google One Tapを強制的に無効化
-    await page.evaluate(() => {
-      // windowオブジェクトを直接上書き
-      window.google = {
-        accounts: {
-          id: {
-            initialize: () => console.log('[Proxy] Google One Tap blocked'),
-            prompt: () => console.log('[Proxy] Google One Tap prompt blocked'),
-            renderButton: () => {},
-            disableAutoSelect: () => {},
-            storeCredential: () => {},
-            cancel: () => {},
-            onGoogleLibraryLoad: () => {},
-            revoke: () => {}
-          }
-        }
-      };
-      
-      // 既に実行されているGoogle関連のコードを停止
-      if (window.gapi) {
-        window.gapi = undefined;
-      }
     }).catch(() => {});
 
     await new Promise(resolve => setTimeout(resolve, 1500));
