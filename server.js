@@ -369,6 +369,30 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
       timeout: 20000
     }).catch(() => {});
 
+    // Google One Tapを強制的に無効化
+    await page.evaluate(() => {
+      // windowオブジェクトを直接上書き
+      window.google = {
+        accounts: {
+          id: {
+            initialize: () => console.log('[Proxy] Google One Tap blocked'),
+            prompt: () => console.log('[Proxy] Google One Tap prompt blocked'),
+            renderButton: () => {},
+            disableAutoSelect: () => {},
+            storeCredential: () => {},
+            cancel: () => {},
+            onGoogleLibraryLoad: () => {},
+            revoke: () => {}
+          }
+        }
+      };
+      
+      // 既に実行されているGoogle関連のコードを停止
+      if (window.gapi) {
+        window.gapi = undefined;
+      }
+    }).catch(() => {});
+
     await new Promise(resolve => setTimeout(resolve, 1500));
 
     let html = await page.content();
