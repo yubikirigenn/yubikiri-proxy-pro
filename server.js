@@ -153,7 +153,7 @@ function rewriteHTML(html, baseUrl) {
         }
         
         function encodeProxyUrl(url) {
-          return '/proxy/' + btoa(url).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=/g, '');
+          return '/proxy/' + btoa(url).replace(/\\+/g, '-').replace(/\\\//g, '_').replace(/=/g, '');
         }
         
         const originalFetch = window.fetch;
@@ -195,7 +195,7 @@ function rewriteHTML(html, baseUrl) {
   return html;
 }
 
-// HTML用プロキシ（Puppeteer使用）
+// HTML用プロキシ(Puppeteer使用)
 app.get('/proxy/:encodedUrl*', async (req, res) => {
   let page;
   try {
@@ -204,7 +204,7 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
 
     console.log('📡 Proxying:', targetUrl);
 
-    // 静的リソース（画像、CSS、JS等）は直接取得
+    // 静的リソース(画像、CSS、JS等)は直接取得
     const parsedUrl = new url.URL(targetUrl);
     const ext = path.extname(parsedUrl.pathname).toLowerCase();
     const staticExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.css', '.js', '.woff', '.woff2', '.ttf', '.svg', '.ico', '.mp4', '.webm', '.json'];
@@ -221,16 +221,36 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
                              parsedUrl.pathname.includes('/onboarding/') ||
                              parsedUrl.pathname.includes('/guest/') ||
                              parsedUrl.hostname.startsWith('api.') ||
+                             // Google認証関連を追加
+                             parsedUrl.hostname.includes('accounts.google.com') ||
+                             parsedUrl.hostname.includes('googleapis.com') ||
+                             parsedUrl.hostname.includes('gstatic.com') ||
+                             parsedUrl.hostname.includes('google.com') && parsedUrl.pathname.includes('/o/oauth2/') ||
                              (parsedUrl.hostname.includes('twitter.com') && parsedUrl.pathname.startsWith('/i/'));
     
     if (shouldDirectFetch) {
+      // オリジナルのリクエストヘッダーを可能な限り保持
       const headers = {
-        'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0',
-        'Referer': targetUrl,
+        'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': req.headers['accept'] || '*/*',
+        'Accept-Language': req.headers['accept-language'] || 'en-US,en;q=0.9',
+        'Accept-Encoding': req.headers['accept-encoding'] || 'gzip, deflate, br',
       };
+
+      // Refererを元のドメインに設定
+      const refererUrl = new url.URL(targetUrl);
+      headers['Referer'] = `${refererUrl.protocol}//${refererUrl.host}/`;
+      
+      // Originを元のドメインに設定
+      headers['Origin'] = `${refererUrl.protocol}//${refererUrl.host}`;
 
       if (req.headers.cookie) {
         headers['Cookie'] = req.headers.cookie;
+      }
+
+      // Authorization headerがあれば転送
+      if (req.headers.authorization) {
+        headers['Authorization'] = req.headers.authorization;
       }
 
       const response = await axios({
@@ -239,7 +259,8 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
         headers: headers,
         responseType: 'arraybuffer',
         timeout: 15000,
-        validateStatus: () => true
+        validateStatus: () => true,
+        maxRedirects: 5
       });
 
       const contentType = response.headers['content-type'] || '';
@@ -256,6 +277,11 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
       if (response.headers['cache-control']) {
         res.setHeader('Cache-Control', response.headers['cache-control']);
       }
+
+      // Access-Control-Allow-Originを設定
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
       
       return res.send(response.data);
     }
@@ -321,15 +347,24 @@ app.post('/proxy/:encodedUrl*', async (req, res) => {
 
     console.log('📡 POST Proxying:', targetUrl);
 
+    const parsedUrl = new url.URL(targetUrl);
     const headers = {
-      'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0',
+      'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       'Accept': req.headers.accept || '*/*',
       'Content-Type': req.headers['content-type'] || 'application/x-www-form-urlencoded',
-      'Referer': targetUrl,
+      'Accept-Language': req.headers['accept-language'] || 'en-US,en;q=0.9',
     };
+
+    // OriginとRefererを元のドメインに設定
+    headers['Origin'] = `${parsedUrl.protocol}//${parsedUrl.host}`;
+    headers['Referer'] = `${parsedUrl.protocol}//${parsedUrl.host}/`;
 
     if (req.headers.cookie) {
       headers['Cookie'] = req.headers.cookie;
+    }
+
+    if (req.headers.authorization) {
+      headers['Authorization'] = req.headers.authorization;
     }
 
     const response = await axios({
@@ -349,6 +384,11 @@ app.post('/proxy/:encodedUrl*', async (req, res) => {
       res.setHeader('Set-Cookie', response.headers['set-cookie']);
     }
 
+    // CORS対応
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
     if (contentType.includes('text/html')) {
       let html = response.data.toString('utf-8');
       html = rewriteHTML(html, targetUrl);
@@ -367,6 +407,15 @@ app.post('/proxy/:encodedUrl*', async (req, res) => {
     console.error('❌ POST Proxy error:', error.message);
     res.status(500).json({ error: error.message });
   }
+});
+
+// OPTIONSリクエスト対応（CORS Preflight）
+app.options('/proxy/:encodedUrl*', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cookie');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  res.status(204).send();
 });
 
 app.post('/api/proxy', async (req, res) => {
