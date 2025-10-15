@@ -396,6 +396,19 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
 
     let html = await page.content();
     
+    // Google GSI関連のスクリプトとiframeを完全削除
+    html = html.replace(/<script[^>]*src=[^>]*accounts\.google\.com[^>]*>[\s\S]*?<\/script>/gi, '');
+    html = html.replace(/<script[^>]*src=[^>]*gsi\/client[^>]*>[\s\S]*?<\/script>/gi, '');
+    html = html.replace(/<script[^>]*src=[^>]*gstatic\.com\/gsi[^>]*>[\s\S]*?<\/script>/gi, '');
+    html = html.replace(/<iframe[^>]*accounts\.google\.com[^>]*>[\s\S]*?<\/iframe>/gi, '');
+    html = html.replace(/<div[^>]*id=["']g_id_onload[^>]*>[\s\S]*?<\/div>/gi, '');
+    
+    // インラインスクリプト内のGoogle One Tap初期化コードも削除
+    html = html.replace(/google\.accounts\.id\.initialize\([^)]*\);?/gi, '');
+    html = html.replace(/google\.accounts\.id\.prompt\([^)]*\);?/gi, '');
+    
+    console.log('✅ Google GSI scripts removed from HTML');
+    
     // Cookieを取得
     const pageCookies = await page.cookies();
     if (pageCookies.length > 0) {
