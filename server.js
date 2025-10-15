@@ -133,11 +133,43 @@ function rewriteHTML(html, baseUrl) {
     }
   });
 
-  // XMLHttpRequest/fetchのインターセプトスクリプトを追加
+  // XMLHttpRequest/fetchのインターセプトスクリプト + Google One Tap無効化
   const interceptScript = `
     <script>
       (function() {
         const proxyBase = '${origin}';
+        
+        // Google One Tap / GSI を完全に無効化
+        window.google = window.google || {};
+        window.google.accounts = {
+          id: {
+            initialize: function() { console.log('[Proxy] Google One Tap disabled'); },
+            prompt: function() { console.log('[Proxy] Google One Tap prompt disabled'); },
+            renderButton: function() { console.log('[Proxy] Google button disabled'); },
+            disableAutoSelect: function() {},
+            storeCredential: function() {},
+            cancel: function() {},
+            onGoogleLibraryLoad: function() {},
+            revoke: function() {}
+          }
+        };
+        
+        // gsi/client スクリプトを無効化
+        const originalCreateElement = document.createElement;
+        document.createElement = function(tagName) {
+          const element = originalCreateElement.call(document, tagName);
+          if (tagName.toLowerCase() === 'script') {
+            const originalSetAttribute = element.setAttribute.bind(element);
+            element.setAttribute = function(name, value) {
+              if (name === 'src' && (value.includes('accounts.google.com/gsi') || value.includes('gsi/client'))) {
+                console.log('[Proxy] Blocked Google GSI script:', value);
+                return;
+              }
+              return originalSetAttribute(name, value);
+            };
+          }
+          return element;
+        };
         
         function toAbsoluteUrl(relativeUrl) {
           if (relativeUrl.startsWith('http://') || relativeUrl.startsWith('https://')) {
@@ -181,7 +213,12 @@ function rewriteHTML(html, baseUrl) {
     </script>
   `;
 
-  html = html.replace(/<\/head>/i, interceptScript + '</head>');
+  // インターセプトスクリプトを<head>の最初に挿入（早期実行のため）
+  html = html.replace(/<head[^>]*>/i, (match) => match + interceptScript);
+  
+  // Google GSI スクリプトタグを削除
+  html = html.replace(/<script[^>]*src=[^>]*accounts\.google\.com\/gsi[^>]*>[\s\S]*?<\/script>/gi, '<!-- Google GSI script removed by proxy -->');
+  html = html.replace(/<script[^>]*src=[^>]*gsi\/client[^>]*>[\s\S]*?<\/script>/gi, '<!-- Google GSI script removed by proxy -->');
 
   // Base タグを追加
   if (!html.includes('<base')) {
