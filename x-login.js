@@ -1,7 +1,14 @@
-// x-login.js - Xログイン処理
+// x-login.js - Xログイン処理（waitForTimeout修正版）
 
 /**
- * Xログイン（改善版 - より長い待機時間）
+ * 待機用のヘルパー関数
+ */
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Xログイン（改善版）
  */
 async function loginToX(page, username, password) {
   const logs = {
@@ -19,28 +26,28 @@ async function loginToX(page, username, password) {
       timeout: 60000
     });
     console.log('[X-LOGIN] ✓ Login page loaded');
-    await page.waitForTimeout(3000);
+    await sleep(3000);
 
     // Step 2: ユーザー名入力
     logs.steps.push({ step: 2, action: 'Enter username', time: Date.now() });
     const usernameSelector = 'input[autocomplete="username"]';
     await page.waitForSelector(usernameSelector, { visible: true, timeout: 15000 });
     await page.click(usernameSelector);
-    await page.waitForTimeout(500);
+    await sleep(500);
     
     // 1文字ずつゆっくり入力
     for (const char of username) {
       await page.keyboard.type(char);
-      await page.waitForTimeout(100);
+      await sleep(100);
     }
     console.log('[X-LOGIN] ✓ Username entered');
-    await page.waitForTimeout(2000);
+    await sleep(2000);
 
     // Step 3: Next ボタン
     logs.steps.push({ step: 3, action: 'Click Next', time: Date.now() });
     await page.keyboard.press('Enter');
     console.log('[X-LOGIN] ✓ Next clicked');
-    await page.waitForTimeout(5000); // 長めに待機
+    await sleep(5000);
 
     // Step 4: パスワード入力待機
     logs.steps.push({ step: 4, action: 'Wait for password field', time: Date.now() });
@@ -50,11 +57,10 @@ async function loginToX(page, username, password) {
       await page.waitForSelector(passwordSelector, { visible: true, timeout: 15000 });
       console.log('[X-LOGIN] ✓ Password field found');
     } catch (e) {
-      // パスワードフィールドが見つからない場合
       const currentUrl = page.url();
       console.log('[X-LOGIN] ⚠ Password field not found, URL:', currentUrl);
       
-      // 追加認証が必要な場合の検出
+      // 追加認証が必要な場合
       const bodyText = await page.evaluate(() => document.body.innerText);
       if (bodyText.includes('Unusual') || bodyText.includes('確認') || bodyText.includes('verify')) {
         logs.errors.push('Additional verification required (phone/email)');
@@ -72,14 +78,14 @@ async function loginToX(page, username, password) {
     // Step 5: パスワード入力
     logs.steps.push({ step: 5, action: 'Enter password', time: Date.now() });
     await page.click(passwordSelector);
-    await page.waitForTimeout(500);
+    await sleep(500);
     
     for (const char of password) {
       await page.keyboard.type(char);
-      await page.waitForTimeout(100);
+      await sleep(100);
     }
     console.log('[X-LOGIN] ✓ Password entered');
-    await page.waitForTimeout(2000);
+    await sleep(2000);
 
     // Step 6: ログインボタン
     logs.steps.push({ step: 6, action: 'Click Login', time: Date.now() });
@@ -91,7 +97,7 @@ async function loginToX(page, username, password) {
     let authToken = null;
     
     for (let i = 0; i < 60; i++) {
-      await page.waitForTimeout(1000);
+      await sleep(1000);
       
       // Cookie確認
       const cookies = await page.cookies();
@@ -106,8 +112,7 @@ async function loginToX(page, username, password) {
       const currentUrl = page.url();
       if (!currentUrl.includes('/login') && !currentUrl.includes('/flow')) {
         console.log(`[X-LOGIN] ✓ URL changed: ${currentUrl}`);
-        // さらに少し待ってCookie確認
-        await page.waitForTimeout(3000);
+        await sleep(3000);
         const finalCookies = await page.cookies();
         authToken = finalCookies.find(c => c.name === 'auth_token');
         if (authToken) {
@@ -140,15 +145,16 @@ async function loginToX(page, username, password) {
     } else {
       console.log('[X-LOGIN] ❌ Login failed - no auth_token after 60s');
       
-      // スクリーンショット取得（デバッグ用）
-      const screenshot = await page.screenshot({ encoding: 'base64' });
+      // 現在のページ情報を取得
+      const currentUrl = page.url();
+      const pageTitle = await page.title();
       
       return {
         success: false,
-        message: 'Login timeout - no auth_token',
-        currentUrl: page.url(),
+        message: 'Login timeout - no auth_token acquired',
+        currentUrl,
+        pageTitle,
         cookies: finalCookies,
-        screenshot: screenshot.substring(0, 100) + '...', // 最初の100文字だけ
         logs
       };
     }
@@ -169,6 +175,27 @@ async function loginToX(page, username, password) {
   }
 }
 
+/**
+ * デバッグ用：スクリーンショット付きログイン
+ */
+async function loginToXWithDebug(page, username, password) {
+  const result = await loginToX(page, username, password);
+  
+  // 失敗時はスクリーンショットを取得
+  if (!result.success) {
+    try {
+      const screenshot = await page.screenshot({ encoding: 'base64' });
+      result.screenshot = screenshot.substring(0, 100) + '... (truncated)';
+      console.log('[X-LOGIN] Screenshot captured');
+    } catch (e) {
+      console.log('[X-LOGIN] Could not capture screenshot:', e.message);
+    }
+  }
+  
+  return result;
+}
+
 module.exports = {
-  loginToX
+  loginToX,
+  loginToXWithDebug
 };
