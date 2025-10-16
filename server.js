@@ -74,7 +74,7 @@ function rewriteHTML(html, baseUrl) {
   const urlObj = new url.URL(baseUrl);
   const origin = `${urlObj.protocol}//${urlObj.host}`;
 
-  // href属性をリライト
+  // hrefを書き換え
   html = html.replace(/href\s*=\s*["']([^"']+)["']/gi, (match, href) => {
     if (href.startsWith('javascript:') || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:')) {
       return match;
@@ -95,7 +95,7 @@ function rewriteHTML(html, baseUrl) {
     }
   });
 
-  // src属性をリライト
+  // srcを書き換え
   html = html.replace(/src\s*=\s*["']([^"']+)["']/gi, (match, src) => {
     if (src.startsWith('data:') || src.startsWith('blob:')) {
       return match;
@@ -116,7 +116,7 @@ function rewriteHTML(html, baseUrl) {
     }
   });
 
-  // action属性をリライト
+  // actionを書き換え
   html = html.replace(/action\s*=\s*["']([^"']+)["']/gi, (match, action) => {
     let absoluteUrl = action;
     try {
@@ -133,36 +133,34 @@ function rewriteHTML(html, baseUrl) {
     }
   });
 
-  // XMLHttpRequest/fetchのインターセプトスクリプト + Google One Tap無効化
+  // インターセプトスクリプト + Google One Tap無効化
   const interceptScript = `
     <script>
       (function() {
         const proxyBase = '${origin}';
         
-        // Google One Tap / GSI を完全に無効化
-        window.google = window.google || {};
-        window.google.accounts = {
-          id: {
-            initialize: function() { console.log('[Proxy] Google One Tap disabled'); },
-            prompt: function() { console.log('[Proxy] Google One Tap prompt disabled'); },
-            renderButton: function() { console.log('[Proxy] Google button disabled'); },
-            disableAutoSelect: function() {},
-            storeCredential: function() {},
-            cancel: function() {},
-            onGoogleLibraryLoad: function() {},
-            revoke: function() {}
-          }
-        };
+        // Google完全無効化
+        Object.defineProperty(window, 'google', {
+          get: () => undefined,
+          set: () => false,
+          configurable: false
+        });
         
-        // gsi/client スクリプトを無効化
+        Object.defineProperty(window, 'gapi', {
+          get: () => undefined,
+          set: () => false,
+          configurable: false
+        });
+        
+        // script要素作成監視
         const originalCreateElement = document.createElement;
         document.createElement = function(tagName) {
           const element = originalCreateElement.call(document, tagName);
           if (tagName.toLowerCase() === 'script') {
             const originalSetAttribute = element.setAttribute.bind(element);
             element.setAttribute = function(name, value) {
-              if (name === 'src' && (value.includes('accounts.google.com/gsi') || value.includes('gsi/client'))) {
-                console.log('[Proxy] Blocked Google GSI script:', value);
+              if (name === 'src' && (value.includes('google') || value.includes('gstatic'))) {
+                console.log('[Proxy] Blocked Google script:', value);
                 return;
               }
               return originalSetAttribute(name, value);
@@ -190,10 +188,16 @@ function rewriteHTML(html, baseUrl) {
         
         const originalFetch = window.fetch;
         window.fetch = function(resource, options) {
-          if (typeof resource === 'string' && !resource.startsWith('blob:') && !resource.startsWith('data:')) {
-            const absoluteUrl = toAbsoluteUrl(resource);
-            if (absoluteUrl.startsWith('http')) {
-              resource = encodeProxyUrl(absoluteUrl);
+          if (typeof resource === 'string') {
+            if (resource.includes('google') || resource.includes('gstatic')) {
+              console.log('[Proxy] Blocked Google fetch:', resource);
+              return Promise.reject(new Error('Blocked'));
+            }
+            if (!resource.startsWith('blob:') && !resource.startsWith('data:')) {
+              const absoluteUrl = toAbsoluteUrl(resource);
+              if (absoluteUrl.startsWith('http')) {
+                resource = encodeProxyUrl(absoluteUrl);
+              }
             }
           }
           return originalFetch.call(this, resource, options);
@@ -201,26 +205,45 @@ function rewriteHTML(html, baseUrl) {
 
         const originalOpen = XMLHttpRequest.prototype.open;
         XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-          if (typeof url === 'string' && !url.startsWith('blob:') && !url.startsWith('data:')) {
-            const absoluteUrl = toAbsoluteUrl(url);
-            if (absoluteUrl.startsWith('http')) {
-              url = encodeProxyUrl(absoluteUrl);
+          if (typeof url === 'string') {
+            if (url.includes('google') || url.includes('gstatic')) {
+              console.log('[Proxy] Blocked Google XHR:', url);
+              throw new Error('Blocked');
+            }
+            if (!url.startsWith('blob:') && !url.startsWith('data:')) {
+              const absoluteUrl = toAbsoluteUrl(url);
+              if (absoluteUrl.startsWith('http')) {
+                url = encodeProxyUrl(absoluteUrl);
+              }
             }
           }
           return originalOpen.call(this, method, url, ...rest);
         };
+
+        // エラー抑制
+        const originalError = console.error;
+        console.error = function(...args) {
+          const msg = args.join(' ');
+          if (msg.includes('GSI') || msg.includes('google')) {
+            return;
+          }
+          return originalError.apply(console, args);
+        };
+
+        console.warn = () => {};
       })();
     </script>
   `;
 
-  // インターセプトスクリプトを<head>の最初に挿入（早期実行のため）
   html = html.replace(/<head[^>]*>/i, (match) => match + interceptScript);
   
-  // Google GSI スクリプトタグを削除
-  html = html.replace(/<script[^>]*src=[^>]*accounts\.google\.com\/gsi[^>]*>[\s\S]*?<\/script>/gi, '<!-- Google GSI script removed by proxy -->');
-  html = html.replace(/<script[^>]*src=[^>]*gsi\/client[^>]*>[\s\S]*?<\/script>/gi, '<!-- Google GSI script removed by proxy -->');
+  // Google関連スクリプト削除
+  html = html.replace(/<script[^>]*src=[^>]*google[^>]*>[\s\S]*?<\/script>/gi, '<!-- Removed -->');
+  html = html.replace(/<script[^>]*src=[^>]*gstatic[^>]*>[\s\S]*?<\/script>/gi, '<!-- Removed -->');
+  html = html.replace(/<iframe[^>]*google[^>]*>[\s\S]*?<\/iframe>/gi, '<!-- Removed -->');
+  html = html.replace(/<div[^>]*id=["']g_id[^>]*>[\s\S]*?<\/div>/gi, '<!-- Removed -->');
+  html = html.replace(/google\.accounts\.id\.[^;]+;?/gi, '/* Removed */');
 
-  // Base タグを追加
   if (!html.includes('<base')) {
     html = html.replace(/<head[^>]*>/i, `<head><base href="/proxy/${encodeProxyUrl(baseUrl)}">`);
   }
@@ -232,7 +255,7 @@ function rewriteHTML(html, baseUrl) {
   return html;
 }
 
-// HTML用プロキシ(Puppeteer使用)
+// プロキシエンドポイント
 app.get('/proxy/:encodedUrl*', async (req, res) => {
   let page;
   try {
@@ -241,54 +264,36 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
 
     console.log('📡 Proxying:', targetUrl);
 
-    // 静的リソース(画像、CSS、JS等)は直接取得
     const parsedUrl = new url.URL(targetUrl);
     const ext = path.extname(parsedUrl.pathname).toLowerCase();
     const staticExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.css', '.js', '.woff', '.woff2', '.ttf', '.svg', '.ico', '.mp4', '.webm', '.json'];
     
-    // 明らかにHTMLページではないものは直接取得
     const shouldDirectFetch = staticExtensions.includes(ext) ||
                              parsedUrl.pathname.includes('/api/') ||
                              parsedUrl.pathname.includes('/graphql/') ||
-                             parsedUrl.pathname.includes('/gsi/') ||
                              parsedUrl.pathname.includes('/1.1/') ||
-                             parsedUrl.pathname.includes('/i/js_inst') ||
                              parsedUrl.pathname.includes('/i/api/') ||
-                             parsedUrl.pathname.includes('/jot/') ||
-                             parsedUrl.pathname.includes('/onboarding/') ||
-                             parsedUrl.pathname.includes('/guest/') ||
                              parsedUrl.pathname.includes('/2/') ||
-                             parsedUrl.pathname.startsWith('/i/api/') ||
                              parsedUrl.hostname.startsWith('api.') ||
-                             // Google認証関連を追加
-                             parsedUrl.hostname.includes('accounts.google.com') ||
-                             parsedUrl.hostname.includes('googleapis.com') ||
-                             parsedUrl.hostname.includes('gstatic.com') ||
-                             parsedUrl.hostname.includes('google.com') && parsedUrl.pathname.includes('/o/oauth2/') ||
-                             (parsedUrl.hostname.includes('twitter.com') && parsedUrl.pathname.startsWith('/i/')) ||
+                             parsedUrl.hostname.includes('google') ||
                              (parsedUrl.hostname.includes('x.com') && parsedUrl.pathname.startsWith('/i/'));
     
     if (shouldDirectFetch) {
-      // オリジナルのリクエストヘッダーを可能な限り保持
       const headers = {
-        'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept': req.headers['accept'] || '*/*',
         'Accept-Language': req.headers['accept-language'] || 'en-US,en;q=0.9',
         'Accept-Encoding': req.headers['accept-encoding'] || 'gzip, deflate, br',
       };
 
-      // Refererを元のドメインに設定
       const refererUrl = new url.URL(targetUrl);
       headers['Referer'] = `${refererUrl.protocol}//${refererUrl.host}/`;
-      
-      // Originを元のドメインに設定
       headers['Origin'] = `${refererUrl.protocol}//${refererUrl.host}`;
 
       if (req.headers.cookie) {
         headers['Cookie'] = req.headers.cookie;
       }
 
-      // Authorization headerがあれば転送
       if (req.headers.authorization) {
         headers['Authorization'] = req.headers.authorization;
       }
@@ -305,20 +310,16 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
 
       const contentType = response.headers['content-type'] || '';
       
-      // Content-Typeをそのまま返す
       res.setHeader('Content-Type', contentType);
       
-      // Set-Cookieがあれば転送
       if (response.headers['set-cookie']) {
         res.setHeader('Set-Cookie', response.headers['set-cookie']);
       }
       
-      // Cache-Controlも転送
       if (response.headers['cache-control']) {
         res.setHeader('Cache-Control', response.headers['cache-control']);
       }
 
-      // Access-Control-Allow-Originを設定
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -333,26 +334,25 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
     await page.setViewport({ width: 1920, height: 1080 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    // Google認証関連のリクエストのみをブロック
+    // 【最強版】すべてのGoogleリソースをブロック
     await page.setRequestInterception(true);
     page.on('request', (request) => {
       const requestUrl = request.url();
-      const resourceType = request.resourceType();
       
-      // Google認証関連のみブロック（より厳密な条件）
-      const shouldBlock = (
-        (requestUrl.includes('accounts.google.com') && requestUrl.includes('/gsi/')) ||
-        (requestUrl.includes('google.com') && requestUrl.includes('/gsi/client')) ||
-        (requestUrl.includes('accounts.google.com') && requestUrl.includes('/o/oauth2/')) ||
-        (requestUrl.includes('google.com') && requestUrl.includes('iframeresize'))
+      const isGoogleResource = (
+        requestUrl.includes('google.com') ||
+        requestUrl.includes('gstatic.com') ||
+        requestUrl.includes('googleapis.com') ||
+        requestUrl.includes('doubleclick.net')
       );
       
-      if (shouldBlock) {
-        console.log('🚫 Blocked Google GSI:', requestUrl);
+      if (isGoogleResource) {
+        console.log('🚫 Blocked Google:', requestUrl);
         request.abort();
-      } else {
-        request.continue();
+        return;
       }
+      
+      request.continue();
     });
 
     // Cookieを設定
@@ -364,27 +364,76 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
       await page.setCookie(...cookies).catch(() => {});
     }
 
-    // ページロード前にGoogle APIを無効化（重要：gotoの前に実行）
+    // 【最強版】Google API完全無効化
     await page.evaluateOnNewDocument(() => {
-      // Google One Tap完全無効化
       Object.defineProperty(window, 'google', {
-        value: {
-          accounts: {
-            id: {
-              initialize: function() { console.log('[Proxy] Google One Tap blocked'); },
-              prompt: function() { console.log('[Proxy] prompt blocked'); },
-              renderButton: function() {},
-              disableAutoSelect: function() {},
-              storeCredential: function() {},
-              cancel: function() {},
-              onGoogleLibraryLoad: function() {},
-              revoke: function() {}
-            }
-          }
-        },
-        writable: false,
+        get() { return undefined; },
+        set() { return false; },
         configurable: false
       });
+
+      Object.defineProperty(window, 'gapi', {
+        get() { return undefined; },
+        set() { return false; },
+        configurable: false
+      });
+
+      const originalError = console.error;
+      const originalWarn = console.warn;
+      
+      console.error = function(...args) {
+        const msg = args.join(' ');
+        if (msg.includes('GSI') || msg.includes('google') || msg.includes('client ID')) {
+          return;
+        }
+        return originalError.apply(console, args);
+      };
+
+      console.warn = function(...args) {
+        const msg = args.join(' ');
+        if (msg.includes('GSI') || msg.includes('google') || msg.includes('FedCM')) {
+          return;
+        }
+        return originalWarn.apply(console, args);
+      };
+
+      window.addEventListener('unhandledrejection', (event) => {
+        const msg = String(event.reason);
+        if (msg.includes('google') || msg.includes('GSI')) {
+          event.preventDefault();
+        }
+      });
+
+      const observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          for (const node of mutation.addedNodes) {
+            if (node.nodeType === 1) {
+              if (node.tagName === 'IFRAME' && node.src) {
+                if (node.src.includes('google') || node.src.includes('gstatic')) {
+                  node.remove();
+                }
+              }
+              if (node.tagName === 'SCRIPT' && node.src) {
+                if (node.src.includes('google') || node.src.includes('gstatic')) {
+                  node.remove();
+                }
+              }
+              if (node.id && node.id.includes('g_id')) {
+                node.remove();
+              }
+            }
+          }
+        }
+      });
+
+      if (document.documentElement) {
+        observer.observe(document.documentElement, {
+          childList: true,
+          subtree: true
+        });
+      }
+
+      console.log('[Proxy] Google blocking initialized');
     });
 
     await page.goto(targetUrl, {
@@ -394,34 +443,30 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
 
     await new Promise(resolve => setTimeout(resolve, 1500));
 
-    let html = await page.content();
+    let htmlContent = await page.content();
     
-    // Google GSI関連のスクリプトとiframeを完全削除
-    html = html.replace(/<script[^>]*src=[^>]*accounts\.google\.com[^>]*>[\s\S]*?<\/script>/gi, '');
-    html = html.replace(/<script[^>]*src=[^>]*gsi\/client[^>]*>[\s\S]*?<\/script>/gi, '');
-    html = html.replace(/<script[^>]*src=[^>]*gstatic\.com\/gsi[^>]*>[\s\S]*?<\/script>/gi, '');
-    html = html.replace(/<iframe[^>]*accounts\.google\.com[^>]*>[\s\S]*?<\/iframe>/gi, '');
-    html = html.replace(/<div[^>]*id=["']g_id_onload[^>]*>[\s\S]*?<\/div>/gi, '');
+    // Google関連削除
+    htmlContent = htmlContent.replace(/<script[^>]*src=[^>]*google[^>]*>[\s\S]*?<\/script>/gi, '');
+    htmlContent = htmlContent.replace(/<script[^>]*src=[^>]*gstatic[^>]*>[\s\S]*?<\/script>/gi, '');
+    htmlContent = htmlContent.replace(/<iframe[^>]*google[^>]*>[\s\S]*?<\/iframe>/gi, '');
+    htmlContent = htmlContent.replace(/<div[^>]*id=["']g_id[^>]*>[\s\S]*?<\/div>/gi, '');
+    htmlContent = htmlContent.replace(/google\.accounts\.id\.[^;]+;?/gi, '');
+    htmlContent = htmlContent.replace(/google\.accounts\.id\.prompt\([^)]*\);?/gi, '');
     
-    // インラインスクリプト内のGoogle One Tap初期化コードも削除
-    html = html.replace(/google\.accounts\.id\.initialize\([^)]*\);?/gi, '');
-    html = html.replace(/google\.accounts\.id\.prompt\([^)]*\);?/gi, '');
+    console.log('✅ Google resources removed');
     
-    console.log('✅ Google GSI scripts removed from HTML');
-    
-    // Cookieを取得
-    const pageCookies = await page.cookies();
-    if (pageCookies.length > 0) {
-      const setCookieHeaders = pageCookies.map(cookie => {
+    const cookies = await page.cookies();
+    if (cookies.length > 0) {
+      const setCookieHeaders = cookies.map(cookie => {
         return `${cookie.name}=${cookie.value}; Path=${cookie.path || '/'}; ${cookie.httpOnly ? 'HttpOnly;' : ''} ${cookie.secure ? 'Secure;' : ''}`;
       });
       res.setHeader('Set-Cookie', setCookieHeaders);
     }
 
-    html = rewriteHTML(html, targetUrl);
+    htmlContent = rewriteHTML(htmlContent, targetUrl);
     
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.send(html);
+    res.send(htmlContent);
 
     await page.close().catch(() => {});
 
@@ -437,7 +482,7 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
   }
 });
 
-// POSTリクエスト処理
+// POSTリクエスト
 app.post('/proxy/:encodedUrl*', async (req, res) => {
   try {
     const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
@@ -447,13 +492,12 @@ app.post('/proxy/:encodedUrl*', async (req, res) => {
 
     const parsedUrl = new url.URL(targetUrl);
     const headers = {
-      'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       'Accept': req.headers.accept || '*/*',
       'Content-Type': req.headers['content-type'] || 'application/x-www-form-urlencoded',
       'Accept-Language': req.headers['accept-language'] || 'en-US,en;q=0.9',
     };
 
-    // OriginとRefererを元のドメインに設定
     headers['Origin'] = `${parsedUrl.protocol}//${parsedUrl.host}`;
     headers['Referer'] = `${parsedUrl.protocol}//${parsedUrl.host}/`;
 
@@ -482,17 +526,16 @@ app.post('/proxy/:encodedUrl*', async (req, res) => {
       res.setHeader('Set-Cookie', response.headers['set-cookie']);
     }
 
-    // CORS対応
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
     if (contentType.includes('text/html')) {
-      let html = response.data.toString('utf-8');
-      html = rewriteHTML(html, targetUrl);
+      let htmlPost = response.data.toString('utf-8');
+      htmlPost = rewriteHTML(htmlPost, targetUrl);
       
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.send(html);
+      res.send(htmlPost);
     } else if (contentType.includes('application/json')) {
       res.setHeader('Content-Type', contentType);
       res.send(response.data);
@@ -507,7 +550,6 @@ app.post('/proxy/:encodedUrl*', async (req, res) => {
   }
 });
 
-// OPTIONSリクエスト対応（CORS Preflight）
 app.options('/proxy/:encodedUrl*', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -543,224 +585,8 @@ app.get('/', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Yubikiri Proxy Pro (Forward Proxy + Puppeteer) running on port ${PORT}`);
+  console.log(`🚀 Yubikiri Proxy Pro running on port ${PORT}`);
 });
-
-// ===== 以下をserver.jsの末尾（process.on('SIGTERM'...)の直前）に追加 =====
-
-const { loginToX, loginToXWithDebug } = require('./x-login');
-
-// Xログイン専用のページキャッシュ
-let xLoginPage = null;
-
-/**
- * Xログイン用のページ初期化（Google認証ブロック込み）
- */
-async function initXLoginPage() {
-  const browserInstance = await initBrowser();
-  const page = await browserInstance.newPage();
-
-  await page.setViewport({ width: 1920, height: 1080 });
-  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-
-  // Google認証ブロック（既存のコードと同じ方式）
-  await page.setRequestInterception(true);
-  page.on('request', (request) => {
-    const requestUrl = request.url();
-    const shouldBlock = (
-      (requestUrl.includes('accounts.google.com') && requestUrl.includes('/gsi/')) ||
-      (requestUrl.includes('google.com') && requestUrl.includes('/gsi/client')) ||
-      (requestUrl.includes('accounts.google.com') && requestUrl.includes('/o/oauth2/')) ||
-      (requestUrl.includes('google.com') && requestUrl.includes('iframeresize'))
-    );
-    
-    if (shouldBlock) {
-      console.log('🚫 Blocked Google GSI:', requestUrl);
-      request.abort();
-    } else {
-      request.continue();
-    }
-  });
-
-  // Google API無効化
-  await page.evaluateOnNewDocument(() => {
-    Object.defineProperty(window, 'google', {
-      value: {
-        accounts: {
-          id: {
-            initialize: function() { console.log('[Proxy] Google One Tap blocked'); },
-            prompt: function() {},
-            renderButton: function() {},
-            disableAutoSelect: function() {},
-            storeCredential: function() {},
-            cancel: function() {},
-            onGoogleLibraryLoad: function() {},
-            revoke: function() {}
-          }
-        }
-      },
-      writable: false,
-      configurable: false
-    });
-  });
-
-  console.log('✅ X login page initialized with Google auth blocking');
-  return page;
-}
-
-/**
- * POST /api/x-login - Xログインエンドポイント
- */
-app.post('/api/x-login', async (req, res) => {
-  const { username, password, debug = false } = req.body;
-
-  if (!username || !password) {
-    return res.status(400).json({ 
-      success: false,
-      error: 'Username and password are required' 
-    });
-  }
-
-  try {
-    console.log(`[X-LOGIN API] Starting login for user: ${username}`);
-
-    // ページ初期化（キャッシュがあれば再利用）
-    if (!xLoginPage) {
-      xLoginPage = await initXLoginPage();
-    }
-
-    // ログイン実行
-    const result = debug 
-      ? await loginToXWithDebug(xLoginPage, username, password)
-      : await loginToX(xLoginPage, username, password);
-
-    if (result.success) {
-      // 成功時のレスポンス
-      return res.json({
-        success: true,
-        message: 'Login successful',
-        cookies: result.cookies.map(c => ({
-          name: c.name,
-          value: c.value,
-          domain: c.domain,
-          path: c.path,
-          expires: c.expires,
-          httpOnly: c.httpOnly,
-          secure: c.secure
-        })),
-        authToken: result.authToken,
-        ct0Token: result.ct0Token,
-        currentUrl: result.currentUrl,
-        logs: debug ? result.logs : undefined
-      });
-    } else {
-      // 失敗時のレスポンス
-      return res.status(401).json({
-        success: false,
-        message: result.message || 'Login failed',
-        error: result.error,
-        currentUrl: result.currentUrl,
-        logs: debug ? result.logs : undefined
-      });
-    }
-
-  } catch (error) {
-    console.error('[X-LOGIN API] Error:', error.message);
-    return res.status(500).json({
-      success: false,
-      error: 'Login request failed',
-      message: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
-});
-
-/**
- * GET /api/x-cookies - 現在のXのCookie取得
- */
-app.get('/api/x-cookies', async (req, res) => {
-  try {
-    if (!xLoginPage) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'No active X session. Please login first.' 
-      });
-    }
-
-    const cookies = await xLoginPage.cookies();
-    const authToken = cookies.find(c => c.name === 'auth_token');
-
-    return res.json({
-      success: true,
-      isLoggedIn: !!authToken,
-      cookies: cookies.map(c => ({
-        name: c.name,
-        domain: c.domain,
-        path: c.path
-      })),
-      currentUrl: xLoginPage.url()
-    });
-
-  } catch (error) {
-    console.error('[X-COOKIES API] Error:', error.message);
-    return res.status(500).json({
-      success: false,
-      error: 'Failed to get cookies',
-      message: error.message
-    });
-  }
-});
-
-/**
- * POST /api/x-inject-cookies - Cookie注入（既存のauth_tokenがある場合）
- */
-app.post('/api/x-inject-cookies', async (req, res) => {
-  const { cookies } = req.body;
-
-  if (!cookies || !Array.isArray(cookies)) {
-    return res.status(400).json({ 
-      success: false,
-      error: 'Cookies array is required' 
-    });
-  }
-
-  try {
-    console.log('[X-INJECT] Injecting cookies...');
-
-    if (!xLoginPage) {
-      xLoginPage = await initXLoginPage();
-    }
-
-    // Cookie設定
-    await xLoginPage.setCookie(...cookies);
-
-    // Xのホームに移動してログイン確認
-    await xLoginPage.goto('https://x.com/home', {
-      waitUntil: 'networkidle2',
-      timeout: 15000
-    });
-
-    const currentUrl = xLoginPage.url();
-    const isLoggedIn = !currentUrl.includes('/login');
-
-    return res.json({
-      success: isLoggedIn,
-      message: isLoggedIn ? 'Cookies injected successfully' : 'Cookie injection failed',
-      currentUrl,
-      isLoggedIn
-    });
-
-  } catch (error) {
-    console.error('[X-INJECT] Error:', error.message);
-    return res.status(500).json({
-      success: false,
-      error: 'Cookie injection failed',
-      message: error.message
-    });
-  }
-});
-
-// ===== ここまで追加 =====
 
 process.on('SIGTERM', async () => {
   if (browser) {
