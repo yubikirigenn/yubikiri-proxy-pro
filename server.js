@@ -546,6 +546,222 @@ app.listen(PORT, () => {
   console.log(`🚀 Yubikiri Proxy Pro (Forward Proxy + Puppeteer) running on port ${PORT}`);
 });
 
+// ===== 以下をserver.jsの末尾（process.on('SIGTERM'...)の直前）に追加 =====
+
+const { loginToX, loginToXWithDebug } = require('./x-login');
+
+// Xログイン専用のページキャッシュ
+let xLoginPage = null;
+
+/**
+ * Xログイン用のページ初期化（Google認証ブロック込み）
+ */
+async function initXLoginPage() {
+  const browserInstance = await initBrowser();
+  const page = await browserInstance.newPage();
+
+  await page.setViewport({ width: 1920, height: 1080 });
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+  // Google認証ブロック（既存のコードと同じ方式）
+  await page.setRequestInterception(true);
+  page.on('request', (request) => {
+    const requestUrl = request.url();
+    const shouldBlock = (
+      (requestUrl.includes('accounts.google.com') && requestUrl.includes('/gsi/')) ||
+      (requestUrl.includes('google.com') && requestUrl.includes('/gsi/client')) ||
+      (requestUrl.includes('accounts.google.com') && requestUrl.includes('/o/oauth2/')) ||
+      (requestUrl.includes('google.com') && requestUrl.includes('iframeresize'))
+    );
+    
+    if (shouldBlock) {
+      console.log('🚫 Blocked Google GSI:', requestUrl);
+      request.abort();
+    } else {
+      request.continue();
+    }
+  });
+
+  // Google API無効化
+  await page.evaluateOnNewDocument(() => {
+    Object.defineProperty(window, 'google', {
+      value: {
+        accounts: {
+          id: {
+            initialize: function() { console.log('[Proxy] Google One Tap blocked'); },
+            prompt: function() {},
+            renderButton: function() {},
+            disableAutoSelect: function() {},
+            storeCredential: function() {},
+            cancel: function() {},
+            onGoogleLibraryLoad: function() {},
+            revoke: function() {}
+          }
+        }
+      },
+      writable: false,
+      configurable: false
+    });
+  });
+
+  console.log('✅ X login page initialized with Google auth blocking');
+  return page;
+}
+
+/**
+ * POST /api/x-login - Xログインエンドポイント
+ */
+app.post('/api/x-login', async (req, res) => {
+  const { username, password, debug = false } = req.body;
+
+  if (!username || !password) {
+    return res.status(400).json({ 
+      success: false,
+      error: 'Username and password are required' 
+    });
+  }
+
+  try {
+    console.log(`[X-LOGIN API] Starting login for user: ${username}`);
+
+    // ページ初期化（キャッシュがあれば再利用）
+    if (!xLoginPage) {
+      xLoginPage = await initXLoginPage();
+    }
+
+    // ログイン実行
+    const result = debug 
+      ? await loginToXWithDebug(xLoginPage, username, password)
+      : await loginToX(xLoginPage, username, password);
+
+    if (result.success) {
+      // 成功時のレスポンス
+      return res.json({
+        success: true,
+        message: 'Login successful',
+        cookies: result.cookies.map(c => ({
+          name: c.name,
+          value: c.value,
+          domain: c.domain,
+          path: c.path,
+          expires: c.expires,
+          httpOnly: c.httpOnly,
+          secure: c.secure
+        })),
+        authToken: result.authToken,
+        ct0Token: result.ct0Token,
+        currentUrl: result.currentUrl,
+        logs: debug ? result.logs : undefined
+      });
+    } else {
+      // 失敗時のレスポンス
+      return res.status(401).json({
+        success: false,
+        message: result.message || 'Login failed',
+        error: result.error,
+        currentUrl: result.currentUrl,
+        logs: debug ? result.logs : undefined
+      });
+    }
+
+  } catch (error) {
+    console.error('[X-LOGIN API] Error:', error.message);
+    return res.status(500).json({
+      success: false,
+      error: 'Login request failed',
+      message: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+/**
+ * GET /api/x-cookies - 現在のXのCookie取得
+ */
+app.get('/api/x-cookies', async (req, res) => {
+  try {
+    if (!xLoginPage) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'No active X session. Please login first.' 
+      });
+    }
+
+    const cookies = await xLoginPage.cookies();
+    const authToken = cookies.find(c => c.name === 'auth_token');
+
+    return res.json({
+      success: true,
+      isLoggedIn: !!authToken,
+      cookies: cookies.map(c => ({
+        name: c.name,
+        domain: c.domain,
+        path: c.path
+      })),
+      currentUrl: xLoginPage.url()
+    });
+
+  } catch (error) {
+    console.error('[X-COOKIES API] Error:', error.message);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to get cookies',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/x-inject-cookies - Cookie注入（既存のauth_tokenがある場合）
+ */
+app.post('/api/x-inject-cookies', async (req, res) => {
+  const { cookies } = req.body;
+
+  if (!cookies || !Array.isArray(cookies)) {
+    return res.status(400).json({ 
+      success: false,
+      error: 'Cookies array is required' 
+    });
+  }
+
+  try {
+    console.log('[X-INJECT] Injecting cookies...');
+
+    if (!xLoginPage) {
+      xLoginPage = await initXLoginPage();
+    }
+
+    // Cookie設定
+    await xLoginPage.setCookie(...cookies);
+
+    // Xのホームに移動してログイン確認
+    await xLoginPage.goto('https://x.com/home', {
+      waitUntil: 'networkidle2',
+      timeout: 15000
+    });
+
+    const currentUrl = xLoginPage.url();
+    const isLoggedIn = !currentUrl.includes('/login');
+
+    return res.json({
+      success: isLoggedIn,
+      message: isLoggedIn ? 'Cookies injected successfully' : 'Cookie injection failed',
+      currentUrl,
+      isLoggedIn
+    });
+
+  } catch (error) {
+    console.error('[X-INJECT] Error:', error.message);
+    return res.status(500).json({
+      success: false,
+      error: 'Cookie injection failed',
+      message: error.message
+    });
+  }
+});
+
+// ===== ここまで追加 =====
+
 process.on('SIGTERM', async () => {
   if (browser) {
     await browser.close().catch(() => {});
