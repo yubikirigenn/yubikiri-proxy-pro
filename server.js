@@ -59,7 +59,7 @@ async function initBrowser() {
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
-app.use('/static', express.static('public'));
+app.use(express.static('public')); // publicフォルダ全体を公開
 
 function encodeProxyUrl(targetUrl) {
   return Buffer.from(targetUrl).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
@@ -580,22 +580,11 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
-app.listen(PORT, () => {
-  console.log(`🚀 Yubikiri Proxy Pro running on port ${PORT}`);
-});
-
+// ===== Xログイン機能 =====
 const { loginToX } = require('./x-login');
 
-// Xログイン用のページキャッシュ
 let xLoginPage = null;
 
-/**
- * Xログイン用ページ初期化
- */
 async function initXLoginPage() {
   const browserInstance = await initBrowser();
   const page = await browserInstance.newPage();
@@ -603,7 +592,6 @@ async function initXLoginPage() {
   await page.setViewport({ width: 1920, height: 1080 });
   await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-  // Google完全ブロック
   await page.setRequestInterception(true);
   page.on('request', (request) => {
     const requestUrl = request.url();
@@ -653,9 +641,6 @@ async function initXLoginPage() {
   return page;
 }
 
-/**
- * POST /api/x-login - Xログインエンドポイント
- */
 app.post('/api/x-login', async (req, res) => {
   const { username, password } = req.body;
 
@@ -669,12 +654,10 @@ app.post('/api/x-login', async (req, res) => {
   try {
     console.log(`[API] Login request for: ${username}`);
 
-    // ページ初期化
     if (!xLoginPage) {
       xLoginPage = await initXLoginPage();
     }
 
-    // ログイン実行
     const result = await loginToX(xLoginPage, username, password);
 
     if (result.success) {
@@ -711,9 +694,6 @@ app.post('/api/x-login', async (req, res) => {
   }
 });
 
-/**
- * GET /api/x-cookies - Cookie確認
- */
 app.get('/api/x-cookies', async (req, res) => {
   try {
     if (!xLoginPage) {
@@ -742,6 +722,15 @@ app.get('/api/x-cookies', async (req, res) => {
       error: error.message
     });
   }
+});
+
+// ===== デフォルトルート（最後に配置） =====
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+app.listen(PORT, () => {
+  console.log(`🚀 Yubikiri Proxy Pro running on port ${PORT}`);
 });
 
 process.on('SIGTERM', async () => {
