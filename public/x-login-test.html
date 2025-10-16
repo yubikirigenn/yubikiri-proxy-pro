@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>X Login Test</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
+      color: #fff;
+      padding: 40px 20px;
+      min-height: 100vh;
+    }
+    .container { max-width: 600px; margin: 0 auto; }
+    h1 {
+      font-size: 32px;
+      margin-bottom: 30px;
+      text-align: center;
+      background: linear-gradient(135deg, #fff 0%, rgba(255,255,255,0.9) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .card {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px;
+      padding: 30px;
+      margin-bottom: 20px;
+    }
+    label {
+      display: block;
+      color: rgba(255,255,255,0.7);
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+    input {
+      width: 100%;
+      padding: 12px 16px;
+      border: 1px solid rgba(255,255,255,0.2);
+      background: rgba(255,255,255,0.05);
+      color: #fff;
+      border-radius: 6px;
+      font-size: 14px;
+      margin-bottom: 16px;
+    }
+    input:focus {
+      outline: none;
+      background: rgba(255,255,255,0.1);
+      border-color: rgba(255,255,255,0.4);
+    }
+    button {
+      width: 100%;
+      padding: 14px 24px;
+      background: #b0b0b0;
+      color: #1a1a1a;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+    button:hover:not(:disabled) {
+      background: #d0d0d0;
+      transform: translateY(-2px);
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .loading {
+      text-align: center;
+      color: rgba(255,255,255,0.6);
+      padding: 20px;
+      display: none;
+    }
+    .loading.active { display: block; }
+    .spinner {
+      border: 3px solid rgba(255,255,255,0.2);
+      border-top: 3px solid #b0b0b0;
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+      margin: 10px auto;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    .result {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 6px;
+      padding: 16px;
+      font-size: 13px;
+      max-height: 400px;
+      overflow-y: auto;
+      display: none;
+    }
+    .result.active { display: block; }
+    .result.success { border-color: rgba(76,175,80,0.5); background: rgba(76,175,80,0.1); }
+    .result.error { border-color: rgba(244,67,54,0.5); background: rgba(244,67,54,0.1); }
+    .result pre {
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      color: rgba(255,255,255,0.8);
+    }
+    .progress {
+      margin: 10px 0;
+      color: rgba(255,255,255,0.6);
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔐 X Login Test</h1>
+    
+    <div class="card">
+      <label>Xユーザー名 または メールアドレス</label>
+      <input type="text" id="username" placeholder="@username or email">
+      
+      <label>パスワード</label>
+      <input type="password" id="password" placeholder="password">
+      
+      <button id="loginBtn">ログイン</button>
+      <button id="checkBtn" style="background: rgba(255,255,255,0.1); color: #fff;">Cookie確認</button>
+    </div>
+
+    <div id="loading" class="loading">
+      <div class="spinner"></div>
+      <p id="loadingText">ログイン処理中...</p>
+      <p class="progress" id="progress"></p>
+    </div>
+
+    <div id="result" class="result"></div>
+  </div>
+
+  <script>
+    const loginBtn = document.getElementById('loginBtn');
+    const checkBtn = document.getElementById('checkBtn');
+    const loading = document.getElementById('loading');
+    const loadingText = document.getElementById('loadingText');
+    const progress = document.getElementById('progress');
+    const result = document.getElementById('result');
+
+    let progressTimer;
+
+    loginBtn.addEventListener('click', async () => {
+      const username = document.getElementById('username').value.trim();
+      const password = document.getElementById('password').value.trim();
+
+      if (!username || !password) {
+        showResult('ユーザー名とパスワードを入力してください', 'error');
+        return;
+      }
+
+      loginBtn.disabled = true;
+      checkBtn.disabled = true;
+      loading.classList.add('active');
+      result.classList.remove('active');
+
+      // プログレス表示
+      let seconds = 0;
+      progressTimer = setInterval(() => {
+        seconds++;
+        if (seconds < 10) {
+          progress.textContent = `入力フィールドを確認中... (${seconds}s)`;
+        } else if (seconds < 20) {
+          progress.textContent = `パスワード送信中... (${seconds}s)`;
+        } else if (seconds < 40) {
+          progress.textContent = `認証処理中... (${seconds}s)`;
+        } else {
+          progress.textContent = `認証完了を待機中... (${seconds}s)`;
+        }
+      }, 1000);
+
+      try {
+        const response = await fetch('/api/x-login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+
+        const data = await response.json();
+
+        clearInterval(progressTimer);
+
+        if (data.success) {
+          showResult(
+            `✅ ログイン成功!\n\n` +
+            `認証トークン: ${data.authToken ? '取得済み ✓' : '未取得'}\n` +
+            `CT0トークン: ${data.ct0Token ? '取得済み ✓' : '未取得'}\n` +
+            `Cookie数: ${data.cookies.length}\n` +
+            `現在のURL: ${data.currentUrl}\n\n` +
+            `Cookies:\n${data.cookies.map(c => `- ${c.name} (${c.domain})`).join('\n')}\n\n` +
+            `処理ステップ:\n${data.logs.steps.map(s => `✓ Step ${s.step}: ${s.action}`).join('\n')}`,
+            'success'
+          );
+        } else {
+          showResult(
+            `❌ ログイン失敗\n\n` +
+            `エラー: ${data.message || data.error}\n` +
+            `現在のURL: ${data.currentUrl}\n\n` +
+            (data.needsVerification ? 
+              `⚠️ 追加認証が必要です\nXから電話番号またはメールでの確認を求められています。\nブラウザで直接ログインして確認を完了してください。\n\n` : '') +
+            (data.logs ? 
+              `処理ステップ:\n${data.logs.steps.map(s => `${s.status === 'success' ? '✓' : '×'} Step ${s.step}: ${s.action}`).join('\n')}\n\n` : '') +
+            (data.logs?.errors?.length > 0 ? 
+              `エラー詳細:\n${data.logs.errors.map(e => `- ${e.message || e}`).join('\n')}` : ''),
+            'error'
+          );
+        }
+      } catch (error) {
+        clearInterval(progressTimer);
+        showResult(`❌ リクエストエラー: ${error.message}`, 'error');
+      } finally {
+        loginBtn.disabled = false;
+        checkBtn.disabled = false;
+        loading.classList.remove('active');
+      }
+    });
+
+    checkBtn.addEventListener('click', async () => {
+      try {
+        const response = await fetch('/api/x-cookies');
+        const data = await response.json();
+
+        if (data.success) {
+          showResult(
+            `📦 Cookie情報\n\n` +
+            `ログイン状態: ${data.isLoggedIn ? '✅ ログイン済み' : '❌ 未ログイン'}\n` +
+            `Cookie数: ${data.cookies.length}\n` +
+            `現在のURL: ${data.currentUrl}\n\n` +
+            `Cookies:\n${data.cookies.map(c => `- ${c.name} (${c.domain})`).join('\n')}`,
+            data.isLoggedIn ? 'success' : 'error'
+          );
+        } else {
+          showResult(`❌ ${data.error}`, 'error');
+        }
+      } catch (error) {
+        showResult(`❌ ${error.message}`, 'error');
+      }
+    });
+
+    function showResult(text, type) {
+      result.innerHTML = `<pre>${text}</pre>`;
+      result.className = `result ${type} active`;
+    }
+  </script>
+</body>
+</html>

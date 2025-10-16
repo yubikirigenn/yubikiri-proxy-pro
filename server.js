@@ -588,6 +588,162 @@ app.listen(PORT, () => {
   console.log(`🚀 Yubikiri Proxy Pro running on port ${PORT}`);
 });
 
+const { loginToX } = require('./x-login');
+
+// Xログイン用のページキャッシュ
+let xLoginPage = null;
+
+/**
+ * Xログイン用ページ初期化
+ */
+async function initXLoginPage() {
+  const browserInstance = await initBrowser();
+  const page = await browserInstance.newPage();
+
+  await page.setViewport({ width: 1920, height: 1080 });
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+  // Google完全ブロック
+  await page.setRequestInterception(true);
+  page.on('request', (request) => {
+    const requestUrl = request.url();
+    
+    if (requestUrl.includes('google.com') || 
+        requestUrl.includes('gstatic.com') ||
+        requestUrl.includes('googleapis.com')) {
+      console.log('🚫 [X-LOGIN] Blocked:', requestUrl.substring(0, 80));
+      request.abort();
+      return;
+    }
+    
+    request.continue();
+  });
+
+  await page.evaluateOnNewDocument(() => {
+    Object.defineProperty(window, 'google', {
+      get() { return undefined; },
+      set() { return false; },
+      configurable: false
+    });
+
+    const originalError = console.error;
+    const originalWarn = console.warn;
+    
+    console.error = function(...args) {
+      const msg = args.join(' ');
+      if (msg.includes('GSI') || msg.includes('google')) return;
+      return originalError.apply(console, args);
+    };
+
+    console.warn = function(...args) {
+      const msg = args.join(' ');
+      if (msg.includes('GSI') || msg.includes('google')) return;
+      return originalWarn.apply(console, args);
+    };
+
+    window.addEventListener('unhandledrejection', (event) => {
+      const msg = String(event.reason);
+      if (msg.includes('google') || msg.includes('GSI')) {
+        event.preventDefault();
+      }
+    });
+  });
+
+  console.log('✅ X login page initialized');
+  return page;
+}
+
+/**
+ * POST /api/x-login - Xログインエンドポイント
+ */
+app.post('/api/x-login', async (req, res) => {
+  const { username, password } = req.body;
+
+  if (!username || !password) {
+    return res.status(400).json({ 
+      success: false,
+      error: 'Username and password required' 
+    });
+  }
+
+  try {
+    console.log(`[API] Login request for: ${username}`);
+
+    // ページ初期化
+    if (!xLoginPage) {
+      xLoginPage = await initXLoginPage();
+    }
+
+    // ログイン実行
+    const result = await loginToX(xLoginPage, username, password);
+
+    if (result.success) {
+      return res.json({
+        success: true,
+        message: 'Login successful',
+        authToken: result.authToken,
+        ct0Token: result.ct0Token,
+        currentUrl: result.currentUrl,
+        cookies: result.cookies.map(c => ({
+          name: c.name,
+          domain: c.domain
+        })),
+        logs: result.logs
+      });
+    } else {
+      return res.status(401).json({
+        success: false,
+        message: result.message || 'Login failed',
+        error: result.error,
+        currentUrl: result.currentUrl,
+        needsVerification: result.needsVerification,
+        logs: result.logs
+      });
+    }
+
+  } catch (error) {
+    console.error('[API] Login error:', error.message);
+    return res.status(500).json({
+      success: false,
+      error: 'Login request failed',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/x-cookies - Cookie確認
+ */
+app.get('/api/x-cookies', async (req, res) => {
+  try {
+    if (!xLoginPage) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'No active session. Please login first.' 
+      });
+    }
+
+    const cookies = await xLoginPage.cookies();
+    const authToken = cookies.find(c => c.name === 'auth_token');
+
+    return res.json({
+      success: true,
+      isLoggedIn: !!authToken,
+      cookies: cookies.map(c => ({
+        name: c.name,
+        domain: c.domain
+      })),
+      currentUrl: xLoginPage.url()
+    });
+
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 process.on('SIGTERM', async () => {
   if (browser) {
     await browser.close().catch(() => {});

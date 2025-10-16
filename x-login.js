@@ -1,115 +1,128 @@
-// x-login.js - Xログイン専用モジュール（既存コードに影響なし）
+// x-login.js - Xログイン処理
 
 /**
- * Xログイン処理（改善版）
- * @param {Page} page - Puppeteerページオブジェクト
- * @param {string} username - Xのユーザー名
- * @param {string} password - パスワード
- * @returns {Promise<Object>} ログイン結果
+ * Xログイン（改善版 - より長い待機時間）
  */
 async function loginToX(page, username, password) {
   const logs = {
     steps: [],
-    requests: [],
-    responses: [],
     errors: []
   };
 
   try {
-    // Step 1: ログインページへ移動
-    logs.steps.push({ step: 1, action: 'Navigate to login page', time: Date.now() });
-    console.log('[X-LOGIN] Step 1: Navigating to login page...');
+    console.log('[X-LOGIN] Starting login...');
     
+    // Step 1: ログインページへ
+    logs.steps.push({ step: 1, action: 'Navigate to login', time: Date.now() });
     await page.goto('https://x.com/i/flow/login', {
-      waitUntil: 'networkidle2',
-      timeout: 30000
+      waitUntil: 'networkidle0',
+      timeout: 60000
     });
-    
-    await page.waitForTimeout(2000);
-    logs.steps.push({ step: 1, status: 'success', time: Date.now() });
+    console.log('[X-LOGIN] ✓ Login page loaded');
+    await page.waitForTimeout(3000);
 
     // Step 2: ユーザー名入力
     logs.steps.push({ step: 2, action: 'Enter username', time: Date.now() });
-    console.log('[X-LOGIN] Step 2: Entering username...');
-    
     const usernameSelector = 'input[autocomplete="username"]';
-    await page.waitForSelector(usernameSelector, { visible: true, timeout: 10000 });
+    await page.waitForSelector(usernameSelector, { visible: true, timeout: 15000 });
     await page.click(usernameSelector);
     await page.waitForTimeout(500);
-    await page.type(usernameSelector, username, { delay: 100 });
-    await page.waitForTimeout(1000);
     
-    logs.steps.push({ step: 2, status: 'success', time: Date.now() });
+    // 1文字ずつゆっくり入力
+    for (const char of username) {
+      await page.keyboard.type(char);
+      await page.waitForTimeout(100);
+    }
+    console.log('[X-LOGIN] ✓ Username entered');
+    await page.waitForTimeout(2000);
 
-    // Step 3: Nextボタンクリック
-    logs.steps.push({ step: 3, action: 'Click Next button', time: Date.now() });
-    console.log('[X-LOGIN] Step 3: Clicking Next...');
-    
-    // Enterキーを使用（より確実）
+    // Step 3: Next ボタン
+    logs.steps.push({ step: 3, action: 'Click Next', time: Date.now() });
     await page.keyboard.press('Enter');
-    await page.waitForTimeout(3000);
-    
-    logs.steps.push({ step: 3, status: 'success', time: Date.now() });
+    console.log('[X-LOGIN] ✓ Next clicked');
+    await page.waitForTimeout(5000); // 長めに待機
 
-    // Step 4: パスワード入力
-    logs.steps.push({ step: 4, action: 'Enter password', time: Date.now() });
-    console.log('[X-LOGIN] Step 4: Entering password...');
-    
+    // Step 4: パスワード入力待機
+    logs.steps.push({ step: 4, action: 'Wait for password field', time: Date.now() });
     const passwordSelector = 'input[type="password"]';
-    await page.waitForSelector(passwordSelector, { visible: true, timeout: 10000 });
+    
+    try {
+      await page.waitForSelector(passwordSelector, { visible: true, timeout: 15000 });
+      console.log('[X-LOGIN] ✓ Password field found');
+    } catch (e) {
+      // パスワードフィールドが見つからない場合
+      const currentUrl = page.url();
+      console.log('[X-LOGIN] ⚠ Password field not found, URL:', currentUrl);
+      
+      // 追加認証が必要な場合の検出
+      const bodyText = await page.evaluate(() => document.body.innerText);
+      if (bodyText.includes('Unusual') || bodyText.includes('確認') || bodyText.includes('verify')) {
+        logs.errors.push('Additional verification required (phone/email)');
+        return {
+          success: false,
+          message: 'Additional verification required',
+          needsVerification: true,
+          logs
+        };
+      }
+      
+      throw e;
+    }
+
+    // Step 5: パスワード入力
+    logs.steps.push({ step: 5, action: 'Enter password', time: Date.now() });
     await page.click(passwordSelector);
     await page.waitForTimeout(500);
-    await page.type(passwordSelector, password, { delay: 100 });
-    await page.waitForTimeout(1000);
     
-    logs.steps.push({ step: 4, status: 'success', time: Date.now() });
+    for (const char of password) {
+      await page.keyboard.type(char);
+      await page.waitForTimeout(100);
+    }
+    console.log('[X-LOGIN] ✓ Password entered');
+    await page.waitForTimeout(2000);
 
-    // Step 5: ログインボタンクリック
-    logs.steps.push({ step: 5, action: 'Click Login button', time: Date.now() });
-    console.log('[X-LOGIN] Step 5: Clicking Login...');
-    
+    // Step 6: ログインボタン
+    logs.steps.push({ step: 6, action: 'Click Login', time: Date.now() });
     await page.keyboard.press('Enter');
-    console.log('[X-LOGIN] Login button clicked, waiting for completion...');
+    console.log('[X-LOGIN] ✓ Login clicked, waiting for auth...');
 
-    // Step 6: ログイン完了待機（auth_token取得を待つ）
-    logs.steps.push({ step: 6, action: 'Wait for auth_token', time: Date.now() });
-    console.log('[X-LOGIN] Step 6: Waiting for authentication...');
-    
+    // Step 7: ログイン完了待機（最大60秒）
+    logs.steps.push({ step: 7, action: 'Wait for auth_token', time: Date.now() });
     let authToken = null;
-    const maxAttempts = 30;
     
-    for (let i = 0; i < maxAttempts; i++) {
+    for (let i = 0; i < 60; i++) {
       await page.waitForTimeout(1000);
       
+      // Cookie確認
       const cookies = await page.cookies();
       authToken = cookies.find(c => c.name === 'auth_token');
       
       if (authToken) {
-        console.log(`[X-LOGIN] ✅ auth_token found after ${i + 1} seconds!`);
-        logs.steps.push({ 
-          step: 6, 
-          status: 'success', 
-          time: Date.now(),
-          message: `auth_token acquired after ${i + 1}s`
-        });
+        console.log(`[X-LOGIN] ✅ auth_token found after ${i + 1}s!`);
         break;
       }
       
-      // URLチェック（ログイン完了している可能性）
+      // URL変化確認
       const currentUrl = page.url();
       if (!currentUrl.includes('/login') && !currentUrl.includes('/flow')) {
-        console.log(`[X-LOGIN] URL changed to: ${currentUrl}`);
-        logs.steps.push({
-          step: 6,
-          status: 'url_changed',
-          url: currentUrl,
-          time: Date.now()
-        });
+        console.log(`[X-LOGIN] ✓ URL changed: ${currentUrl}`);
+        // さらに少し待ってCookie確認
+        await page.waitForTimeout(3000);
+        const finalCookies = await page.cookies();
+        authToken = finalCookies.find(c => c.name === 'auth_token');
+        if (authToken) {
+          console.log(`[X-LOGIN] ✅ auth_token found after URL change!`);
+        }
         break;
+      }
+      
+      // 10秒ごとに状況ログ
+      if (i % 10 === 9) {
+        console.log(`[X-LOGIN] ⏳ Still waiting... ${i + 1}s elapsed`);
       }
     }
 
-    // 最終Cookie取得
+    // 最終結果
     const finalCookies = await page.cookies();
     const finalAuthToken = finalCookies.find(c => c.name === 'auth_token');
     const ct0Token = finalCookies.find(c => c.name === 'ct0');
@@ -125,13 +138,17 @@ async function loginToX(page, username, password) {
         logs
       };
     } else {
-      console.log('[X-LOGIN] ❌ Login failed - no auth_token');
-      logs.errors.push('auth_token not found after 30 seconds');
+      console.log('[X-LOGIN] ❌ Login failed - no auth_token after 60s');
+      
+      // スクリーンショット取得（デバッグ用）
+      const screenshot = await page.screenshot({ encoding: 'base64' });
+      
       return {
         success: false,
-        message: 'Login failed - no auth_token acquired',
-        cookies: finalCookies,
+        message: 'Login timeout - no auth_token',
         currentUrl: page.url(),
+        cookies: finalCookies,
+        screenshot: screenshot.substring(0, 100) + '...', // 最初の100文字だけ
         logs
       };
     }
@@ -140,120 +157,18 @@ async function loginToX(page, username, password) {
     console.error('[X-LOGIN] ❌ Error:', error.message);
     logs.errors.push({
       message: error.message,
-      stack: error.stack,
-      time: Date.now()
+      stack: error.stack
     });
 
     return {
       success: false,
       error: error.message,
+      currentUrl: page.url(),
       logs
     };
   }
 }
 
-/**
- * リクエスト/レスポンスデバッグ用のリスナー設定
- */
-function setupDebugListeners(page, logs) {
-  // リクエストログ
-  page.on('request', (request) => {
-    const url = request.url();
-    if (url.includes('/login') || 
-        url.includes('/sessions') || 
-        url.includes('/authenticate') ||
-        url.includes('/i/api/')) {
-      logs.requests.push({
-        url,
-        method: request.method(),
-        timestamp: Date.now()
-      });
-      console.log(`[DEBUG] Request: ${request.method()} ${url}`);
-    }
-  });
-
-  // レスポンスログ
-  page.on('response', async (response) => {
-    const url = response.url();
-    if (url.includes('/login') || 
-        url.includes('/sessions') || 
-        url.includes('/authenticate') ||
-        url.includes('/i/api/')) {
-      
-      const status = response.status();
-      let body = null;
-
-      try {
-        const contentType = response.headers()['content-type'] || '';
-        if (contentType.includes('application/json')) {
-          body = await response.json();
-        }
-      } catch (e) {
-        // JSON parseエラーは無視
-      }
-
-      logs.responses.push({
-        url,
-        status,
-        timestamp: Date.now(),
-        body: body ? JSON.stringify(body).substring(0, 200) : null
-      });
-
-      console.log(`[DEBUG] Response: ${status} ${url}`);
-      if (body && status !== 200) {
-        console.log(`[DEBUG] Body:`, JSON.stringify(body).substring(0, 200));
-      }
-    }
-  });
-
-  // コンソールエラー
-  page.on('console', (msg) => {
-    const type = msg.type();
-    if (type === 'error') {
-      const text = msg.text();
-      // Google認証エラーは無視
-      if (!text.includes('GSI_LOGGER') && !text.includes('google')) {
-        logs.errors.push({
-          type: 'console_error',
-          message: text,
-          timestamp: Date.now()
-        });
-        console.log(`[DEBUG] Console Error: ${text}`);
-      }
-    }
-  });
-}
-
-/**
- * 詳細デバッグ付きログイン
- */
-async function loginToXWithDebug(page, username, password) {
-  const logs = {
-    steps: [],
-    requests: [],
-    responses: [],
-    errors: []
-  };
-
-  // デバッグリスナー設定
-  setupDebugListeners(page, logs);
-
-  // ログイン実行
-  const result = await loginToX(page, username, password);
-  
-  // ログを統合
-  result.logs = {
-    ...result.logs,
-    requests: logs.requests,
-    responses: logs.responses,
-    errors: [...(result.logs.errors || []), ...logs.errors]
-  };
-
-  return result;
-}
-
 module.exports = {
-  loginToX,
-  loginToXWithDebug,
-  setupDebugListeners
+  loginToX
 };
