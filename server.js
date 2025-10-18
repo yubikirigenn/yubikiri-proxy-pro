@@ -11,7 +11,6 @@ const PORT = process.env.PORT || 3000;
 let browser;
 let puppeteer;
 
-// Puppeteer初期化
 async function loadPuppeteer() {
   if (process.env.RENDER) {
     const puppeteerCore = require('puppeteer-core');
@@ -34,7 +33,11 @@ async function initBrowser() {
       if (puppeteer.isRender) {
         const chromium = puppeteer.chromium;
         launchConfig = {
-          args: chromium.args,
+          args: [
+            ...chromium.args,
+            '--disable-blink-features=AutomationControlled',
+            '--disable-features=IsolateOrigins,site-per-process'
+          ],
           defaultViewport: chromium.defaultViewport,
           executablePath: await chromium.executablePath(),
           headless: chromium.headless,
@@ -42,7 +45,14 @@ async function initBrowser() {
       } else {
         launchConfig = {
           headless: 'new',
-          args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+          args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--disable-blink-features=AutomationControlled',
+            '--disable-features=IsolateOrigins,site-per-process'
+          ]
         };
       }
 
@@ -59,7 +69,7 @@ async function initBrowser() {
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
-app.use(express.static('public')); // publicフォルダ全体を公開
+app.use(express.static('public'));
 
 function encodeProxyUrl(targetUrl) {
   return Buffer.from(targetUrl).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
@@ -74,7 +84,6 @@ function rewriteHTML(html, baseUrl) {
   const urlObj = new url.URL(baseUrl);
   const origin = `${urlObj.protocol}//${urlObj.host}`;
 
-  // hrefを書き換え
   html = html.replace(/href\s*=\s*["']([^"']+)["']/gi, (match, href) => {
     if (href.startsWith('javascript:') || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:')) {
       return match;
@@ -95,7 +104,6 @@ function rewriteHTML(html, baseUrl) {
     }
   });
 
-  // srcを書き換え
   html = html.replace(/src\s*=\s*["']([^"']+)["']/gi, (match, src) => {
     if (src.startsWith('data:') || src.startsWith('blob:')) {
       return match;
@@ -116,7 +124,6 @@ function rewriteHTML(html, baseUrl) {
     }
   });
 
-  // actionを書き換え
   html = html.replace(/action\s*=\s*["']([^"']+)["']/gi, (match, action) => {
     let absoluteUrl = action;
     try {
@@ -133,13 +140,11 @@ function rewriteHTML(html, baseUrl) {
     }
   });
 
-  // インターセプトスクリプト + Google One Tap無効化
   const interceptScript = `
     <script>
       (function() {
         const proxyBase = '${origin}';
         
-        // Google完全無効化
         Object.defineProperty(window, 'google', {
           get: () => undefined,
           set: () => false,
@@ -152,7 +157,6 @@ function rewriteHTML(html, baseUrl) {
           configurable: false
         });
         
-        // script要素作成監視
         const originalCreateElement = document.createElement;
         document.createElement = function(tagName) {
           const element = originalCreateElement.call(document, tagName);
@@ -160,7 +164,6 @@ function rewriteHTML(html, baseUrl) {
             const originalSetAttribute = element.setAttribute.bind(element);
             element.setAttribute = function(name, value) {
               if (name === 'src' && (value.includes('google') || value.includes('gstatic'))) {
-                console.log('[Proxy] Blocked Google script:', value);
                 return;
               }
               return originalSetAttribute(name, value);
@@ -190,7 +193,6 @@ function rewriteHTML(html, baseUrl) {
         window.fetch = function(resource, options) {
           if (typeof resource === 'string') {
             if (resource.includes('google') || resource.includes('gstatic')) {
-              console.log('[Proxy] Blocked Google fetch:', resource);
               return Promise.reject(new Error('Blocked'));
             }
             if (!resource.startsWith('blob:') && !resource.startsWith('data:')) {
@@ -207,7 +209,6 @@ function rewriteHTML(html, baseUrl) {
         XMLHttpRequest.prototype.open = function(method, url, ...rest) {
           if (typeof url === 'string') {
             if (url.includes('google') || url.includes('gstatic')) {
-              console.log('[Proxy] Blocked Google XHR:', url);
               throw new Error('Blocked');
             }
             if (!url.startsWith('blob:') && !url.startsWith('data:')) {
@@ -220,7 +221,6 @@ function rewriteHTML(html, baseUrl) {
           return originalOpen.call(this, method, url, ...rest);
         };
 
-        // エラー抑制
         const originalError = console.error;
         console.error = function(...args) {
           const msg = args.join(' ');
@@ -237,12 +237,11 @@ function rewriteHTML(html, baseUrl) {
 
   html = html.replace(/<head[^>]*>/i, (match) => match + interceptScript);
   
-  // Google関連スクリプト削除
-  html = html.replace(/<script[^>]*src=[^>]*google[^>]*>[\s\S]*?<\/script>/gi, '<!-- Removed -->');
-  html = html.replace(/<script[^>]*src=[^>]*gstatic[^>]*>[\s\S]*?<\/script>/gi, '<!-- Removed -->');
-  html = html.replace(/<iframe[^>]*google[^>]*>[\s\S]*?<\/iframe>/gi, '<!-- Removed -->');
-  html = html.replace(/<div[^>]*id=["']g_id[^>]*>[\s\S]*?<\/div>/gi, '<!-- Removed -->');
-  html = html.replace(/google\.accounts\.id\.[^;]+;?/gi, '/* Removed */');
+  html = html.replace(/<script[^>]*src=[^>]*google[^>]*>[\s\S]*?<\/script>/gi, '');
+  html = html.replace(/<script[^>]*src=[^>]*gstatic[^>]*>[\s\S]*?<\/script>/gi, '');
+  html = html.replace(/<iframe[^>]*google[^>]*>[\s\S]*?<\/iframe>/gi, '');
+  html = html.replace(/<div[^>]*id=["']g_id[^>]*>[\s\S]*?<\/div>/gi, '');
+  html = html.replace(/google\.accounts\.id\.[^;]+;?/gi, '');
 
   if (!html.includes('<base')) {
     html = html.replace(/<head[^>]*>/i, `<head><base href="/proxy/${encodeProxyUrl(baseUrl)}">`);
@@ -255,7 +254,6 @@ function rewriteHTML(html, baseUrl) {
   return html;
 }
 
-// プロキシエンドポイント
 app.get('/proxy/:encodedUrl*', async (req, res) => {
   let page;
   try {
@@ -327,14 +325,12 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
       return res.send(response.data);
     }
 
-    // HTMLページはPuppeteerで取得
     const browserInstance = await initBrowser();
     page = await browserInstance.newPage();
 
     await page.setViewport({ width: 1920, height: 1080 });
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
 
-    // 【最強版】すべてのGoogleリソースをブロック
     await page.setRequestInterception(true);
     page.on('request', (request) => {
       const requestUrl = request.url();
@@ -355,7 +351,6 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
       request.continue();
     });
 
-    // Cookieを設定
     if (req.headers.cookie) {
       const cookies = req.headers.cookie.split(';').map(c => {
         const [name, ...valueParts] = c.trim().split('=');
@@ -364,8 +359,19 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
       await page.setCookie(...cookies).catch(() => {});
     }
 
-    // 【最強版】Google API完全無効化
     await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => false,
+        configurable: true
+      });
+
+      window.chrome = {
+        runtime: {},
+        loadTimes: function() {},
+        csi: function() {},
+        app: {}
+      };
+
       Object.defineProperty(window, 'google', {
         get() { return undefined; },
         set() { return false; },
@@ -432,8 +438,6 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
           subtree: true
         });
       }
-
-      console.log('[Proxy] Google blocking initialized');
     });
 
     await page.goto(targetUrl, {
@@ -445,15 +449,12 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
 
     let htmlContent = await page.content();
     
-    // Google関連削除
     htmlContent = htmlContent.replace(/<script[^>]*src=[^>]*google[^>]*>[\s\S]*?<\/script>/gi, '');
     htmlContent = htmlContent.replace(/<script[^>]*src=[^>]*gstatic[^>]*>[\s\S]*?<\/script>/gi, '');
     htmlContent = htmlContent.replace(/<iframe[^>]*google[^>]*>[\s\S]*?<\/iframe>/gi, '');
     htmlContent = htmlContent.replace(/<div[^>]*id=["']g_id[^>]*>[\s\S]*?<\/div>/gi, '');
     htmlContent = htmlContent.replace(/google\.accounts\.id\.[^;]+;?/gi, '');
     htmlContent = htmlContent.replace(/google\.accounts\.id\.prompt\([^)]*\);?/gi, '');
-    
-    console.log('✅ Google resources removed');
     
     const cookies = await page.cookies();
     if (cookies.length > 0) {
@@ -482,7 +483,6 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
   }
 });
 
-// POSTリクエスト
 app.post('/proxy/:encodedUrl*', async (req, res) => {
   try {
     const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
@@ -589,8 +589,31 @@ async function initXLoginPage() {
   const browserInstance = await initBrowser();
   const page = await browserInstance.newPage();
 
-  await page.setViewport({ width: 1920, height: 1080 });
-  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+  await page.setViewport({ 
+    width: 1920, 
+    height: 1080,
+    deviceScaleFactor: 1,
+    hasTouch: false,
+    isLandscape: true,
+    isMobile: false
+  });
+
+  await page.setUserAgent(
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+  );
+
+  await page.setExtraHTTPHeaders({
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Cache-Control': 'max-age=0'
+  });
 
   await page.setRequestInterception(true);
   page.on('request', (request) => {
@@ -608,7 +631,72 @@ async function initXLoginPage() {
   });
 
   await page.evaluateOnNewDocument(() => {
+    Object.defineProperty(navigator, 'webdriver', {
+      get: () => false,
+      configurable: true
+    });
+
+    window.chrome = {
+      runtime: {},
+      loadTimes: function() {},
+      csi: function() {},
+      app: {}
+    };
+
+    const originalQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (parameters) => (
+      parameters.name === 'notifications' ?
+        Promise.resolve({ state: Notification.permission }) :
+        originalQuery(parameters)
+    );
+
+    Object.defineProperty(navigator, 'plugins', {
+      get: () => [
+        {
+          0: {type: "application/x-google-chrome-pdf", suffixes: "pdf", description: "Portable Document Format"},
+          description: "Portable Document Format",
+          filename: "internal-pdf-viewer",
+          length: 1,
+          name: "Chrome PDF Plugin"
+        },
+        {
+          0: {type: "application/pdf", suffixes: "pdf", description: ""},
+          description: "",
+          filename: "mhjfbmdgcfjbbpaeojofohoefgiehjai",
+          length: 1,
+          name: "Chrome PDF Viewer"
+        }
+      ],
+      configurable: true
+    });
+
+    Object.defineProperty(navigator, 'languages', {
+      get: () => ['en-US', 'en'],
+      configurable: true
+    });
+
+    Object.defineProperty(navigator, 'platform', {
+      get: () => 'Win32',
+      configurable: true
+    });
+
+    Object.defineProperty(navigator, 'hardwareConcurrency', {
+      get: () => 8,
+      configurable: true
+    });
+
+    Object.defineProperty(navigator, 'deviceMemory', {
+      get: () => 8,
+      configurable: true
+    });
+
     Object.defineProperty(window, 'google', {
+      get() { return undefined; },
+      set() { return false; },
+      configurable: false
+    });
+
+    Object.defineProperty(window, 'gapi', {
       get() { return undefined; },
       set() { return false; },
       configurable: false
@@ -635,9 +723,11 @@ async function initXLoginPage() {
         event.preventDefault();
       }
     });
+
+    console.log('[Stealth] Bot detection bypass initialized');
   });
 
-  console.log('✅ X login page initialized');
+  console.log('✅ X login page initialized with stealth mode');
   return page;
 }
 
@@ -724,7 +814,6 @@ app.get('/api/x-cookies', async (req, res) => {
   }
 });
 
-// ===== デフォルトルート（最後に配置） =====
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
