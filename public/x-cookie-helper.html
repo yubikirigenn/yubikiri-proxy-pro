@@ -46,6 +46,13 @@
     .step ol {
       margin-left: 20px;
     }
+    .step a {
+      color: #b0b0b0;
+      text-decoration: none;
+    }
+    .step a:hover {
+      text-decoration: underline;
+    }
     label {
       display: block;
       color: rgba(255,255,255,0.7);
@@ -133,14 +140,14 @@
     
     <div class="card">
       <div class="step">
-        <h2>📋 手順</h2>
+        <h2>📋 概要</h2>
         <p>XへのログインをProxyで使用するには、ブラウザから手動でログインして、Cookieをこのサーバーに注入する必要があります。</p>
       </div>
 
       <div class="step">
         <h2>ステップ1: Xにログイン</h2>
         <ol>
-          <li>新しいタブで <a href="https://x.com/i/flow/login" target="_blank" style="color: #b0b0b0;">https://x.com/i/flow/login</a> を開く</li>
+          <li>新しいタブで <a href="https://x.com/i/flow/login" target="_blank">https://x.com/i/flow/login</a> を開く</li>
           <li>通常通りログインする</li>
           <li>ログインが完了したら次のステップへ</li>
         </ol>
@@ -152,8 +159,8 @@
           <li>Xのタブで <code>F12</code> を押してDevToolsを開く</li>
           <li><strong>Application</strong> タブ（または <strong>Storage</strong>）をクリック</li>
           <li>左側の <strong>Cookies</strong> → <strong>https://x.com</strong> を選択</li>
-          <li><code>auth_token</code> を探して、Valueをコピー</li>
-          <li><code>ct0</code> を探して、Valueをコピー</li>
+          <li><code>auth_token</code> を探して、<strong>Value</strong>列の値をコピー</li>
+          <li><code>ct0</code> を探して、<strong>Value</strong>列の値をコピー</li>
         </ol>
       </div>
 
@@ -165,10 +172,10 @@
         <h2>ステップ3: Cookieを注入</h2>
         
         <label for="authToken">auth_token の値</label>
-        <textarea id="authToken" placeholder="abcdef1234567890..."></textarea>
+        <textarea id="authToken" placeholder="長い英数字の文字列..."></textarea>
         
         <label for="ct0Token">ct0 の値</label>
-        <input type="text" id="ct0Token" placeholder="1234567890abcdef...">
+        <input type="text" id="ct0Token" placeholder="英数字の文字列...">
         
         <button id="injectBtn">Cookieを注入</button>
       </div>
@@ -220,22 +227,32 @@
         if (data.success) {
           showResult(
             `✅ Cookie注入成功!\n\n` +
-            `ログイン状態: ${data.isLoggedIn ? 'ログイン済み' : '未ログイン'}\n` +
+            `ログイン状態: ${data.isLoggedIn ? 'ログイン済み ✓' : '未ログイン'}\n` +
             `現在のURL: ${data.currentUrl}\n` +
             `Cookie数: ${data.cookies.length}\n\n` +
-            `これでProxyからXにアクセスできます！`,
+            `これでProxyからXにログイン状態でアクセスできます！\n\n` +
+            `使用方法:\n` +
+            `1. トップページ (/) でXのURLを入力\n` +
+            `2. 「Go」ボタンをクリック\n` +
+            `3. ログイン状態で表示されます`,
             'success'
           );
         } else {
           showResult(
             `❌ Cookie注入失敗\n\n` +
             `エラー: ${data.message || data.error}\n\n` +
-            `Cookieの値が正しいか確認してください。`,
+            `Cookieの値が正しいか確認してください。\n` +
+            `または、Cookieの有効期限が切れている可能性があります。`,
             'error'
           );
         }
       } catch (error) {
-        showResult(`❌ リクエストエラー: ${error.message}`, 'error');
+        showResult(
+          `❌ リクエストエラー: ${error.message}\n\n` +
+          `サーバーに接続できませんでした。\n` +
+          `サーバーが起動しているか確認してください。`,
+          'error'
+        );
       } finally {
         injectBtn.disabled = false;
         injectBtn.textContent = 'Cookieを注入';
