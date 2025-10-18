@@ -373,3 +373,124 @@ async function loginToX(page, username, password) {
 module.exports = {
   loginToX
 };
+
+// x-page-test.js - Xの通常ページにアクセスできるかテスト
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Xの通常ページにアクセスしてブロック状況を確認
+ */
+async function testXPageAccess(page) {
+  console.log('[X-TEST] Testing X page access without login...');
+  
+  const results = {
+    tests: []
+  };
+  
+  // Test 1: Xトップページ
+  console.log('[X-TEST] Test 1: Accessing https://x.com/');
+  try {
+    await page.goto('https://x.com/', {
+      waitUntil: ['load', 'domcontentloaded'],
+      timeout: 30000
+    });
+    
+    await sleep(3000);
+    
+    const pageInfo1 = await page.evaluate(() => ({
+      url: window.location.href,
+      title: document.title,
+      bodyText: document.body.innerText.substring(0, 500),
+      hasError: document.body.innerText.includes('Error') && 
+                document.body.innerText.includes('Oops')
+    }));
+    
+    console.log('[X-TEST] Top page result:', JSON.stringify(pageInfo1, null, 2));
+    results.tests.push({ page: 'top', ...pageInfo1 });
+    
+  } catch (e) {
+    console.log('[X-TEST] Top page error:', e.message);
+    results.tests.push({ page: 'top', error: e.message });
+  }
+  
+  // Test 2: 特定のユーザープロフィール
+  console.log('[X-TEST] Test 2: Accessing https://x.com/elonmusk');
+  try {
+    await page.goto('https://x.com/elonmusk', {
+      waitUntil: ['load', 'domcontentloaded'],
+      timeout: 30000
+    });
+    
+    await sleep(3000);
+    
+    const pageInfo2 = await page.evaluate(() => ({
+      url: window.location.href,
+      title: document.title,
+      bodyText: document.body.innerText.substring(0, 500),
+      hasError: document.body.innerText.includes('Error') && 
+                document.body.innerText.includes('Oops'),
+      hasContent: document.body.innerText.length > 1000
+    }));
+    
+    console.log('[X-TEST] Profile page result:', JSON.stringify(pageInfo2, null, 2));
+    results.tests.push({ page: 'profile', ...pageInfo2 });
+    
+  } catch (e) {
+    console.log('[X-TEST] Profile page error:', e.message);
+    results.tests.push({ page: 'profile', error: e.message });
+  }
+  
+  // Test 3: 検索ページ
+  console.log('[X-TEST] Test 3: Accessing https://x.com/search');
+  try {
+    await page.goto('https://x.com/search', {
+      waitUntil: ['load', 'domcontentloaded'],
+      timeout: 30000
+    });
+    
+    await sleep(3000);
+    
+    const pageInfo3 = await page.evaluate(() => ({
+      url: window.location.href,
+      title: document.title,
+      bodyText: document.body.innerText.substring(0, 500),
+      hasError: document.body.innerText.includes('Error') && 
+                document.body.innerText.includes('Oops')
+    }));
+    
+    console.log('[X-TEST] Search page result:', JSON.stringify(pageInfo3, null, 2));
+    results.tests.push({ page: 'search', ...pageInfo3 });
+    
+  } catch (e) {
+    console.log('[X-TEST] Search page error:', e.message);
+    results.tests.push({ page: 'search', error: e.message });
+  }
+  
+  // 結果サマリー
+  const blockedCount = results.tests.filter(t => t.hasError).length;
+  const successCount = results.tests.filter(t => !t.hasError && !t.error).length;
+  
+  console.log('[X-TEST] ========== SUMMARY ==========');
+  console.log(`[X-TEST] Total tests: ${results.tests.length}`);
+  console.log(`[X-TEST] Success: ${successCount}`);
+  console.log(`[X-TEST] Blocked: ${blockedCount}`);
+  console.log(`[X-TEST] Errors: ${results.tests.filter(t => t.error).length}`);
+  
+  results.summary = {
+    total: results.tests.length,
+    success: successCount,
+    blocked: blockedCount,
+    conclusion: blockedCount === results.tests.length 
+      ? 'All pages blocked - X blocks Render completely'
+      : 'Only login page is blocked - Regular pages accessible'
+  };
+  
+  return results;
+}
+
+module.exports = {
+  testXPageAccess
+};

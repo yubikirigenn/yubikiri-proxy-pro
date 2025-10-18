@@ -959,3 +959,32 @@ process.on('SIGTERM', async () => {
   }
   process.exit(0);
 });
+
+const { testXPageAccess } = require('./x-page-test');
+
+/**
+ * GET /api/x-test - Xページアクセステスト
+ */
+app.get('/api/x-test', async (req, res) => {
+  try {
+    console.log('[API] Starting X page access test...');
+
+    if (!xLoginPage) {
+      xLoginPage = await initXLoginPage();
+    }
+
+    const results = await testXPageAccess(xLoginPage);
+
+    return res.json({
+      success: true,
+      results
+    });
+
+  } catch (error) {
+    console.error('[API] Test error:', error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
