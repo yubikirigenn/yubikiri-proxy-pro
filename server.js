@@ -585,36 +585,44 @@ const { loginToX } = require('./x-login');
 
 let xLoginPage = null;
 
+// server.js の initXLoginPage() を以下に完全に置き換え
+
 async function initXLoginPage() {
   const browserInstance = await initBrowser();
-  const page = await browserInstance.newPage();
+  
+  // コンテキストを新規作成（より隔離された環境）
+  const context = await browserInstance.createIncognitoBrowserContext();
+  const page = await context.newPage();
 
+  // ビューポート
   await page.setViewport({ 
     width: 1920, 
     height: 1080,
-    deviceScaleFactor: 1,
-    hasTouch: false,
-    isLandscape: true,
-    isMobile: false
+    deviceScaleFactor: 1
   });
 
+  // User-Agent（最新版）
   await page.setUserAgent(
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
   );
 
+  // より詳細なHTTPヘッダー
   await page.setExtraHTTPHeaders({
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
     'Accept-Language': 'en-US,en;q=0.9',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Connection': 'keep-alive',
-    'Upgrade-Insecure-Requests': '1',
+    'Accept-Encoding': 'gzip, deflate, br, zstd',
+    'Cache-Control': 'max-age=0',
+    'Sec-Ch-Ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+    'Sec-Ch-Ua-Mobile': '?0',
+    'Sec-Ch-Ua-Platform': '"Windows"',
     'Sec-Fetch-Dest': 'document',
     'Sec-Fetch-Mode': 'navigate',
     'Sec-Fetch-Site': 'none',
     'Sec-Fetch-User': '?1',
-    'Cache-Control': 'max-age=0'
+    'Upgrade-Insecure-Requests': '1'
   });
 
+  // Googleブロック
   await page.setRequestInterception(true);
   page.on('request', (request) => {
     const requestUrl = request.url();
@@ -622,7 +630,6 @@ async function initXLoginPage() {
     if (requestUrl.includes('google.com') || 
         requestUrl.includes('gstatic.com') ||
         requestUrl.includes('googleapis.com')) {
-      console.log('🚫 [X-LOGIN] Blocked:', requestUrl.substring(0, 80));
       request.abort();
       return;
     }
@@ -630,19 +637,100 @@ async function initXLoginPage() {
     request.continue();
   });
 
+  // 【超強力】ステルスモード
   await page.evaluateOnNewDocument(() => {
+    // WebDriver完全削除
+    delete Object.getPrototypeOf(navigator).webdriver;
+    
     Object.defineProperty(navigator, 'webdriver', {
-      get: () => false,
-      configurable: true
+      get: () => undefined,
+      configurable: false
     });
 
+    // Chrome オブジェクト
     window.chrome = {
-      runtime: {},
-      loadTimes: function() {},
-      csi: function() {},
-      app: {}
+      app: {
+        isInstalled: false,
+        InstallState: {
+          DISABLED: 'disabled',
+          INSTALLED: 'installed',
+          NOT_INSTALLED: 'not_installed'
+        },
+        RunningState: {
+          CANNOT_RUN: 'cannot_run',
+          READY_TO_RUN: 'ready_to_run',
+          RUNNING: 'running'
+        }
+      },
+      runtime: {
+        OnInstalledReason: {
+          CHROME_UPDATE: 'chrome_update',
+          INSTALL: 'install',
+          SHARED_MODULE_UPDATE: 'shared_module_update',
+          UPDATE: 'update'
+        },
+        OnRestartRequiredReason: {
+          APP_UPDATE: 'app_update',
+          OS_UPDATE: 'os_update',
+          PERIODIC: 'periodic'
+        },
+        PlatformArch: {
+          ARM: 'arm',
+          ARM64: 'arm64',
+          MIPS: 'mips',
+          MIPS64: 'mips64',
+          X86_32: 'x86-32',
+          X86_64: 'x86-64'
+        },
+        PlatformNaclArch: {
+          ARM: 'arm',
+          MIPS: 'mips',
+          MIPS64: 'mips64',
+          X86_32: 'x86-32',
+          X86_64: 'x86-64'
+        },
+        PlatformOs: {
+          ANDROID: 'android',
+          CROS: 'cros',
+          LINUX: 'linux',
+          MAC: 'mac',
+          OPENBSD: 'openbsd',
+          WIN: 'win'
+        },
+        RequestUpdateCheckStatus: {
+          NO_UPDATE: 'no_update',
+          THROTTLED: 'throttled',
+          UPDATE_AVAILABLE: 'update_available'
+        }
+      },
+      loadTimes: function() {
+        return {
+          commitLoadTime: Date.now() / 1000 - Math.random(),
+          connectionInfo: 'http/1.1',
+          finishDocumentLoadTime: Date.now() / 1000 - Math.random(),
+          finishLoadTime: Date.now() / 1000 - Math.random(),
+          firstPaintAfterLoadTime: 0,
+          firstPaintTime: Date.now() / 1000 - Math.random(),
+          navigationType: 'Other',
+          npnNegotiatedProtocol: 'unknown',
+          requestTime: Date.now() / 1000 - Math.random() * 2,
+          startLoadTime: Date.now() / 1000 - Math.random(),
+          wasAlternateProtocolAvailable: false,
+          wasFetchedViaSpdy: false,
+          wasNpnNegotiated: false
+        };
+      },
+      csi: function() {
+        return {
+          onloadT: Date.now(),
+          pageT: Date.now() - Math.random() * 1000,
+          startE: Date.now() - Math.random() * 2000,
+          tran: 15
+        };
+      }
     };
 
+    // Permissions
     const originalQuery = window.navigator.permissions.query;
     window.navigator.permissions.query = (parameters) => (
       parameters.name === 'notifications' ?
@@ -650,36 +738,50 @@ async function initXLoginPage() {
         originalQuery(parameters)
     );
 
+    // Plugins（より詳細）
     Object.defineProperty(navigator, 'plugins', {
-      get: () => [
-        {
-          0: {type: "application/x-google-chrome-pdf", suffixes: "pdf", description: "Portable Document Format"},
-          description: "Portable Document Format",
-          filename: "internal-pdf-viewer",
-          length: 1,
-          name: "Chrome PDF Plugin"
-        },
-        {
-          0: {type: "application/pdf", suffixes: "pdf", description: ""},
-          description: "",
-          filename: "mhjfbmdgcfjbbpaeojofohoefgiehjai",
-          length: 1,
-          name: "Chrome PDF Viewer"
-        }
-      ],
+      get: () => {
+        return [
+          {
+            0: {type: "application/x-google-chrome-pdf", suffixes: "pdf", description: "Portable Document Format", enabledPlugin: Plugin},
+            description: "Portable Document Format",
+            filename: "internal-pdf-viewer",
+            length: 1,
+            name: "Chrome PDF Plugin"
+          },
+          {
+            0: {type: "application/pdf", suffixes: "pdf", description: "", enabledPlugin: Plugin},
+            description: "",
+            filename: "mhjfbmdgcfjbbpaeojofohoefgiehjai",
+            length: 1,
+            name: "Chrome PDF Viewer"
+          },
+          {
+            0: {type: "application/x-nacl", suffixes: "", description: "Native Client Executable", enabledPlugin: Plugin},
+            1: {type: "application/x-pnacl", suffixes: "", description: "Portable Native Client Executable", enabledPlugin: Plugin},
+            description: "",
+            filename: "internal-nacl-plugin",
+            length: 2,
+            name: "Native Client"
+          }
+        ];
+      },
       configurable: true
     });
 
+    // Languages
     Object.defineProperty(navigator, 'languages', {
       get: () => ['en-US', 'en'],
       configurable: true
     });
 
+    // Platform
     Object.defineProperty(navigator, 'platform', {
       get: () => 'Win32',
       configurable: true
     });
 
+    // Hardware
     Object.defineProperty(navigator, 'hardwareConcurrency', {
       get: () => 8,
       configurable: true
@@ -690,6 +792,35 @@ async function initXLoginPage() {
       configurable: true
     });
 
+    // Vendor
+    Object.defineProperty(navigator, 'vendor', {
+      get: () => 'Google Inc.',
+      configurable: true
+    });
+
+    // MaxTouchPoints
+    Object.defineProperty(navigator, 'maxTouchPoints', {
+      get: () => 0,
+      configurable: true
+    });
+
+    // Connection
+    Object.defineProperty(navigator, 'connection', {
+      get: () => ({
+        effectiveType: '4g',
+        rtt: 50,
+        downlink: 10,
+        saveData: false
+      }),
+      configurable: true
+    });
+
+    // Battery (存在しないことにする)
+    if (navigator.getBattery) {
+      navigator.getBattery = () => Promise.reject(new Error('Battery API not available'));
+    }
+
+    // Google無効化
     Object.defineProperty(window, 'google', {
       get() { return undefined; },
       set() { return false; },
@@ -702,6 +833,7 @@ async function initXLoginPage() {
       configurable: false
     });
 
+    // エラー抑制
     const originalError = console.error;
     const originalWarn = console.warn;
     
@@ -724,10 +856,10 @@ async function initXLoginPage() {
       }
     });
 
-    console.log('[Stealth] Bot detection bypass initialized');
+    console.log('[Ultra-Stealth] Initialized');
   });
 
-  console.log('✅ X login page initialized with stealth mode');
+  console.log('✅ X login page initialized with ultra-stealth mode');
   return page;
 }
 
