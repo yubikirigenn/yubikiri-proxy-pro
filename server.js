@@ -141,99 +141,128 @@ function rewriteHTML(html, baseUrl) {
   });
 
   const interceptScript = `
-    <script>
-      (function() {
-        const proxyBase = '${origin}';
+  <script>
+    (function() {
+      const proxyBase = '${origin}';
+      const currentProxyUrl = window.location.pathname.match(/\\/proxy\\/([^\\/]+)/)?.[1];
+      
+      Object.defineProperty(window, 'google', {
+        get: () => undefined,
+        set: () => false,
+        configurable: false
+      });
+      
+      Object.defineProperty(window, 'gapi', {
+        get: () => undefined,
+        set: () => false,
+        configurable: false
+      });
+      
+      const originalCreateElement = document.createElement;
+      document.createElement = function(tagName) {
+        const element = originalCreateElement.call(document, tagName);
+        if (tagName.toLowerCase() === 'script') {
+          const originalSetAttribute = element.setAttribute.bind(element);
+          element.setAttribute = function(name, value) {
+            if (name === 'src' && (value.includes('google') || value.includes('gstatic'))) {
+              return;
+            }
+            return originalSetAttribute(name, value);
+          };
+        }
+        return element;
+      };
+      
+      function toAbsoluteUrl(relativeUrl) {
+        if (relativeUrl.startsWith('http://') || relativeUrl.startsWith('https://')) {
+          return relativeUrl;
+        }
+        if (relativeUrl.startsWith('//')) {
+          return '${urlObj.protocol}' + relativeUrl;
+        }
+        if (relativeUrl.startsWith('/')) {
+          return proxyBase + relativeUrl;
+        }
+        return '${baseUrl}' + (relativeUrl.startsWith('/') ? '' : '/') + relativeUrl;
+      }
+      
+      function encodeProxyUrl(url) {
+        return '/proxy/' + btoa(url).replace(/\\+/g, '-').replace(/\\/g, '_').replace(/=/g, '');
+      }
+      
+      // fetch を完全にオーバーライド
+      const originalFetch = window.fetch;
+      window.fetch = function(resource, options) {
+        let url = typeof resource === 'string' ? resource : resource.url;
         
-        Object.defineProperty(window, 'google', {
-          get: () => undefined,
-          set: () => false,
-          configurable: false
-        });
-        
-        Object.defineProperty(window, 'gapi', {
-          get: () => undefined,
-          set: () => false,
-          configurable: false
-        });
-        
-        const originalCreateElement = document.createElement;
-        document.createElement = function(tagName) {
-          const element = originalCreateElement.call(document, tagName);
-          if (tagName.toLowerCase() === 'script') {
-            const originalSetAttribute = element.setAttribute.bind(element);
-            element.setAttribute = function(name, value) {
-              if (name === 'src' && (value.includes('google') || value.includes('gstatic'))) {
-                return;
-              }
-              return originalSetAttribute(name, value);
-            };
-          }
-          return element;
-        };
-        
-        function toAbsoluteUrl(relativeUrl) {
-          if (relativeUrl.startsWith('http://') || relativeUrl.startsWith('https://')) {
-            return relativeUrl;
-          }
-          if (relativeUrl.startsWith('//')) {
-            return '${urlObj.protocol}' + relativeUrl;
-          }
-          if (relativeUrl.startsWith('/')) {
-            return proxyBase + relativeUrl;
-          }
-          return '${baseUrl}/' + relativeUrl;
+        // Google関連はブロック
+        if (url.includes('google') || url.includes('gstatic')) {
+          console.log('[Proxy] Blocked Google fetch:', url);
+          return Promise.reject(new Error('Blocked'));
         }
         
-        function encodeProxyUrl(url) {
-          return '/proxy/' + btoa(url).replace(/\\+/g, '-').replace(/\\\//g, '_').replace(/=/g, '');
-        }
-        
-        const originalFetch = window.fetch;
-        window.fetch = function(resource, options) {
-          if (typeof resource === 'string') {
-            if (resource.includes('google') || resource.includes('gstatic')) {
-              return Promise.reject(new Error('Blocked'));
-            }
-            if (!resource.startsWith('blob:') && !resource.startsWith('data:')) {
-              const absoluteUrl = toAbsoluteUrl(resource);
-              if (absoluteUrl.startsWith('http')) {
-                resource = encodeProxyUrl(absoluteUrl);
-              }
-            }
-          }
+        // blob/data URLはそのまま
+        if (url.startsWith('blob:') || url.startsWith('data:')) {
           return originalFetch.call(this, resource, options);
-        };
-
-        const originalOpen = XMLHttpRequest.prototype.open;
-        XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-          if (typeof url === 'string') {
-            if (url.includes('google') || url.includes('gstatic')) {
-              throw new Error('Blocked');
-            }
-            if (!url.startsWith('blob:') && !url.startsWith('data:')) {
-              const absoluteUrl = toAbsoluteUrl(url);
-              if (absoluteUrl.startsWith('http')) {
-                url = encodeProxyUrl(absoluteUrl);
-              }
-            }
+        }
+        
+        // 相対URLまたは絶対URLを処理
+        const absoluteUrl = toAbsoluteUrl(url);
+        
+        // 外部URLの場合のみプロキシ経由
+        if (absoluteUrl.startsWith('http')) {
+          const proxyUrl = encodeProxyUrl(absoluteUrl);
+          console.log('[Proxy] Fetch redirect:', url, '->', proxyUrl);
+          
+          if (typeof resource === 'string') {
+            return originalFetch.call(this, proxyUrl, options);
+          } else {
+            resource = new Request(proxyUrl, resource);
+            return originalFetch.call(this, resource, options);
           }
-          return originalOpen.call(this, method, url, ...rest);
-        };
+        }
+        
+        return originalFetch.call(this, resource, options);
+      };
 
-        const originalError = console.error;
-        console.error = function(...args) {
-          const msg = args.join(' ');
-          if (msg.includes('GSI') || msg.includes('google')) {
-            return;
+      // XMLHttpRequest を完全にオーバーライド
+      const originalOpen = XMLHttpRequest.prototype.open;
+      XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+        // Google関連はブロック
+        if (typeof url === 'string' && (url.includes('google') || url.includes('gstatic'))) {
+          console.log('[Proxy] Blocked Google XHR:', url);
+          throw new Error('Blocked');
+        }
+        
+        if (typeof url === 'string' && !url.startsWith('blob:') && !url.startsWith('data:')) {
+          const absoluteUrl = toAbsoluteUrl(url);
+          
+          if (absoluteUrl.startsWith('http')) {
+            const proxyUrl = encodeProxyUrl(absoluteUrl);
+            console.log('[Proxy] XHR redirect:', url, '->', proxyUrl);
+            return originalOpen.call(this, method, proxyUrl, ...rest);
           }
-          return originalError.apply(console, args);
-        };
+        }
+        
+        return originalOpen.call(this, method, url, ...rest);
+      };
 
-        console.warn = () => {};
-      })();
-    </script>
-  `;
+      // エラー抑制
+      const originalError = console.error;
+      console.error = function(...args) {
+        const msg = args.join(' ');
+        if (msg.includes('GSI') || msg.includes('google')) {
+          return;
+        }
+        return originalError.apply(console, args);
+      };
+
+      console.warn = () => {};
+      
+      console.log('[Proxy] Intercept script loaded');
+    })();
+  </script>
+`;
 
   html = html.replace(/<head[^>]*>/i, (match) => match + interceptScript);
   
