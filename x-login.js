@@ -1,276 +1,219 @@
-// x-login.js - Xログイン処理（DOM完全読み込み対応版）
+// x-login.js - Xログイン処理（完全版）
 
-/**
- * 待機用のヘルパー関数
- */
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 /**
- * ページが完全に読み込まれるまで待つ
+ * ページの詳細情報を取得
  */
-async function waitForPageLoad(page, timeout = 30000) {
-  try {
-    await page.waitForFunction(
-      () => document.readyState === 'complete',
-      { timeout }
-    );
-    console.log('[X-LOGIN] ✓ Page fully loaded');
-    return true;
-  } catch (e) {
-    console.log('[X-LOGIN] ⚠ Page load timeout, continuing anyway');
-    return false;
-  }
+async function getPageDebugInfo(page) {
+  return await page.evaluate(() => {
+    const inputs = Array.from(document.querySelectorAll('input'));
+    return {
+      url: window.location.href,
+      title: document.title,
+      readyState: document.readyState,
+      bodyLength: document.body.innerHTML.length,
+      inputCount: inputs.length,
+      inputs: inputs.map((input, idx) => ({
+        index: idx,
+        type: input.type,
+        name: input.name,
+        id: input.id,
+        placeholder: input.placeholder,
+        autocomplete: input.autocomplete,
+        className: input.className,
+        visible: input.offsetWidth > 0 && input.offsetHeight > 0
+      })),
+      bodyTextPreview: document.body.innerText.substring(0, 300)
+    };
+  });
 }
 
 /**
- * 要素を待機して取得
- */
-async function waitAndGetElement(page, selectors, timeout = 20000) {
-  const startTime = Date.now();
-  
-  console.log(`[X-LOGIN] Searching for elements: ${selectors.slice(0, 3).join(', ')}...`);
-  
-  while (Date.now() - startTime < timeout) {
-    // すべての入力要素を取得して確認
-    const inputs = await page.$$('input');
-    
-    for (const input of inputs) {
-      try {
-        const inputInfo = await page.evaluate(el => {
-          const rect = el.getBoundingClientRect();
-          return {
-            type: el.type,
-            name: el.name,
-            placeholder: el.placeholder,
-            autocomplete: el.autocomplete,
-            visible: rect.width > 0 && rect.height > 0 && 
-                     window.getComputedStyle(el).display !== 'none' &&
-                     window.getComputedStyle(el).visibility !== 'hidden',
-            value: el.value
-          };
-        }, input);
-        
-        if (inputInfo.visible) {
-          // セレクターに一致するかチェック
-          for (const selector of selectors) {
-            const matches = await page.evaluate((el, sel) => {
-              try {
-                return el.matches(sel);
-              } catch {
-                return false;
-              }
-            }, input, selector);
-            
-            if (matches) {
-              console.log(`[X-LOGIN] ✓ Found input: ${selector}`, inputInfo);
-              return input;
-            }
-          }
-          
-          // プレースホルダーやオートコンプリートでマッチング
-          if (inputInfo.placeholder && (
-            inputInfo.placeholder.toLowerCase().includes('phone') ||
-            inputInfo.placeholder.toLowerCase().includes('email') ||
-            inputInfo.placeholder.toLowerCase().includes('username')
-          )) {
-            console.log('[X-LOGIN] ✓ Found input by placeholder:', inputInfo);
-            return input;
-          }
-          
-          if (inputInfo.autocomplete === 'username' || 
-              inputInfo.name === 'text' ||
-              inputInfo.type === 'text') {
-            console.log('[X-LOGIN] ✓ Found input by attributes:', inputInfo);
-            return input;
-          }
-        }
-      } catch (e) {
-        // 要素が削除された場合などはスキップ
-      }
-    }
-    
-    await sleep(1000);
-  }
-  
-  throw new Error(`No matching input found after ${timeout}ms`);
-}
-
-/**
- * Xログイン（改善版）
+ * Xログイン
  */
 async function loginToX(page, username, password) {
   const logs = {
     steps: [],
-    errors: []
+    errors: [],
+    debug: []
   };
 
   try {
-    console.log('[X-LOGIN] ========== Starting login ==========');
+    console.log('[X-LOGIN] ==================== START ====================');
     
-    // Step 1: ログインページへ移動
-    logs.steps.push({ step: 1, action: 'Navigate to login page', time: Date.now() });
-    console.log('[X-LOGIN] Step 1: Navigating to login page...');
+    // Step 1: ログインページへ
+    console.log('[X-LOGIN] Step 1: Navigating...');
+    logs.steps.push({ step: 1, action: 'Navigate', time: Date.now() });
     
     await page.goto('https://x.com/i/flow/login', {
-      waitUntil: ['networkidle0', 'domcontentloaded'],
+      waitUntil: ['load', 'domcontentloaded'],
       timeout: 60000
     });
     
-    console.log('[X-LOGIN] ✓ Page navigated');
-    await sleep(5000); // ページが落ち着くまで待つ
+    console.log('[X-LOGIN] Page loaded, waiting 8 seconds...');
+    await sleep(8000);
     
-    // ページ読み込み確認
-    await waitForPageLoad(page);
+    // ページ情報取得
+    const pageInfo1 = await getPageDebugInfo(page);
+    console.log('[X-LOGIN] === PAGE INFO AFTER LOAD ===');
+    console.log(JSON.stringify(pageInfo1, null, 2));
+    logs.debug.push({ stage: 'after_load', info: pageInfo1 });
     
-    // ページ情報を取得
-    const pageInfo = await page.evaluate(() => ({
-      url: window.location.href,
-      title: document.title,
-      readyState: document.readyState,
-      inputCount: document.querySelectorAll('input').length,
-      bodyText: document.body.innerText.substring(0, 500)
-    }));
-    
-    console.log('[X-LOGIN] Page info:', pageInfo);
-    logs.steps.push({ step: 1, status: 'success', pageInfo, time: Date.now() });
-
-    // Step 2: ユーザー名入力欄を探す
-    logs.steps.push({ step: 2, action: 'Find username field', time: Date.now() });
-    console.log('[X-LOGIN] Step 2: Finding username field...');
-    
-    const usernameSelectors = [
-      'input[autocomplete="username"]',
-      'input[name="text"]',
-      'input[type="text"]'
-    ];
-    
-    let usernameInput;
-    try {
-      usernameInput = await waitAndGetElement(page, usernameSelectors, 30000);
-    } catch (e) {
-      console.error('[X-LOGIN] ❌ Username field not found');
+    if (pageInfo1.inputCount === 0) {
+      console.error('[X-LOGIN] ❌ NO INPUTS FOUND ON PAGE!');
+      logs.errors.push('No input elements found on page');
       
-      // HTMLを取得してログに保存
       const html = await page.content();
-      console.log('[X-LOGIN] Page HTML length:', html.length);
-      console.log('[X-LOGIN] Page HTML preview:', html.substring(0, 1000));
-      
-      logs.errors.push({
-        step: 'username_field',
-        message: 'Username input not found',
-        pageHtmlPreview: html.substring(0, 2000)
-      });
+      console.log('[X-LOGIN] HTML length:', html.length);
+      console.log('[X-LOGIN] HTML preview:', html.substring(0, 2000));
       
       return {
         success: false,
-        message: 'Username input field not found. Page may not have loaded correctly.',
+        message: 'No input fields found. X may have blocked the request.',
         currentUrl: page.url(),
         logs
       };
     }
     
-    console.log('[X-LOGIN] ✓ Username field found');
-    logs.steps.push({ step: 2, status: 'success', time: Date.now() });
-
-    // Step 3: ユーザー名を入力
-    logs.steps.push({ step: 3, action: 'Enter username', time: Date.now() });
-    console.log('[X-LOGIN] Step 3: Entering username...');
+    // Step 2: ユーザー名入力
+    console.log('[X-LOGIN] Step 2: Finding username input...');
+    logs.steps.push({ step: 2, action: 'Find username', time: Date.now() });
     
-    await usernameInput.click({ clickCount: 3 });
-    await sleep(500);
-    await usernameInput.type(username, { delay: 150 });
+    const usernameInputIndex = await page.evaluate(() => {
+      const inputs = Array.from(document.querySelectorAll('input'));
+      for (let i = 0; i < inputs.length; i++) {
+        const input = inputs[i];
+        if (input.offsetWidth > 0 && input.offsetHeight > 0) {
+          console.log(`Found visible input at index ${i}:`, {
+            type: input.type,
+            name: input.name,
+            placeholder: input.placeholder
+          });
+          return i;
+        }
+      }
+      return -1;
+    });
+    
+    if (usernameInputIndex === -1) {
+      console.error('[X-LOGIN] ❌ No visible input found');
+      logs.errors.push('No visible input elements');
+      
+      return {
+        success: false,
+        message: 'No visible input field found',
+        currentUrl: page.url(),
+        logs
+      };
+    }
+    
+    console.log(`[X-LOGIN] Using input at index: ${usernameInputIndex}`);
+    
+    const inputs = await page.$$('input');
+    const usernameInput = inputs[usernameInputIndex];
+    
+    console.log('[X-LOGIN] Clicking input...');
+    await usernameInput.click();
+    await sleep(1000);
+    
+    console.log('[X-LOGIN] Typing username...');
+    await page.keyboard.type(username, { delay: 150 });
     
     console.log('[X-LOGIN] ✓ Username entered');
-    logs.steps.push({ step: 3, status: 'success', time: Date.now() });
+    logs.steps.push({ step: 2, status: 'success', time: Date.now() });
     await sleep(2000);
-
-    // Step 4: Nextボタンをクリック
-    logs.steps.push({ step: 4, action: 'Click Next', time: Date.now() });
-    console.log('[X-LOGIN] Step 4: Clicking Next...');
+    
+    // Step 3: Next
+    console.log('[X-LOGIN] Step 3: Pressing Enter for Next...');
+    logs.steps.push({ step: 3, action: 'Click Next', time: Date.now() });
     
     await page.keyboard.press('Enter');
     console.log('[X-LOGIN] ✓ Enter pressed');
-    logs.steps.push({ step: 4, status: 'success', time: Date.now() });
-    await sleep(6000);
-
-    // Step 5: パスワード入力欄を探す
-    logs.steps.push({ step: 5, action: 'Find password field', time: Date.now() });
-    console.log('[X-LOGIN] Step 5: Finding password field...');
+    logs.steps.push({ step: 3, status: 'success', time: Date.now() });
+    await sleep(8000);
     
-    const passwordSelectors = [
-      'input[type="password"]',
-      'input[name="password"]',
-      'input[autocomplete="current-password"]'
-    ];
+    const pageInfo2 = await getPageDebugInfo(page);
+    console.log('[X-LOGIN] === PAGE INFO AFTER NEXT ===');
+    console.log(JSON.stringify(pageInfo2, null, 2));
+    logs.debug.push({ stage: 'after_next', info: pageInfo2 });
     
-    let passwordInput;
-    try {
-      passwordInput = await waitAndGetElement(page, passwordSelectors, 30000);
-    } catch (e) {
+    // Step 4: パスワード入力
+    console.log('[X-LOGIN] Step 4: Finding password input...');
+    logs.steps.push({ step: 4, action: 'Find password', time: Date.now() });
+    
+    const passwordInputIndex = await page.evaluate(() => {
+      const inputs = Array.from(document.querySelectorAll('input'));
+      for (let i = 0; i < inputs.length; i++) {
+        const input = inputs[i];
+        if (input.type === 'password' && input.offsetWidth > 0 && input.offsetHeight > 0) {
+          console.log(`Found password input at index ${i}`);
+          return i;
+        }
+      }
+      return -1;
+    });
+    
+    if (passwordInputIndex === -1) {
       console.error('[X-LOGIN] ⚠ Password field not found');
       
-      // 追加認証が必要かチェック
       const bodyText = await page.evaluate(() => document.body.innerText);
-      console.log('[X-LOGIN] Page text preview:', bodyText.substring(0, 500));
+      console.log('[X-LOGIN] Body text:', bodyText.substring(0, 500));
       
-      if (bodyText.toLowerCase().includes('unusual') || 
+      if (bodyText.toLowerCase().includes('unusual') ||
           bodyText.toLowerCase().includes('verify') ||
-          bodyText.toLowerCase().includes('confirm') ||
-          bodyText.toLowerCase().includes('phone') && bodyText.toLowerCase().includes('number')) {
+          bodyText.toLowerCase().includes('phone')) {
         
         logs.errors.push('Additional verification required');
         
         return {
           success: false,
-          message: 'Additional verification required (phone/email confirmation)',
+          message: 'Additional verification required',
           needsVerification: true,
           currentUrl: page.url(),
           logs
         };
       }
       
-      logs.errors.push({
-        step: 'password_field',
-        message: 'Password input not found',
-        bodyTextPreview: bodyText.substring(0, 1000)
-      });
+      logs.errors.push('Password field not found');
       
       return {
         success: false,
-        message: 'Password field not found. May need additional verification.',
+        message: 'Password field not found',
         currentUrl: page.url(),
         logs
       };
     }
     
-    console.log('[X-LOGIN] ✓ Password field found');
-    logs.steps.push({ step: 5, status: 'success', time: Date.now() });
-
-    // Step 6: パスワードを入力
-    logs.steps.push({ step: 6, action: 'Enter password', time: Date.now() });
-    console.log('[X-LOGIN] Step 6: Entering password...');
+    console.log(`[X-LOGIN] Using password input at index: ${passwordInputIndex}`);
     
+    const inputs2 = await page.$$('input');
+    const passwordInput = inputs2[passwordInputIndex];
+    
+    console.log('[X-LOGIN] Clicking password input...');
     await passwordInput.click();
-    await sleep(500);
-    await passwordInput.type(password, { delay: 150 });
+    await sleep(1000);
+    
+    console.log('[X-LOGIN] Typing password...');
+    await page.keyboard.type(password, { delay: 150 });
     
     console.log('[X-LOGIN] ✓ Password entered');
-    logs.steps.push({ step: 6, status: 'success', time: Date.now() });
+    logs.steps.push({ step: 4, status: 'success', time: Date.now() });
     await sleep(2000);
-
-    // Step 7: ログインボタンをクリック
-    logs.steps.push({ step: 7, action: 'Submit login', time: Date.now() });
-    console.log('[X-LOGIN] Step 7: Submitting login...');
+    
+    // Step 5: Login
+    console.log('[X-LOGIN] Step 5: Submitting login...');
+    logs.steps.push({ step: 5, action: 'Submit', time: Date.now() });
     
     await page.keyboard.press('Enter');
     console.log('[X-LOGIN] ✓ Login submitted');
-    logs.steps.push({ step: 7, status: 'success', time: Date.now() });
-
-    // Step 8: 認証トークン待機
-    logs.steps.push({ step: 8, action: 'Wait for auth_token', time: Date.now() });
-    console.log('[X-LOGIN] Step 8: Waiting for authentication...');
+    logs.steps.push({ step: 5, status: 'success', time: Date.now() });
+    
+    // Step 6: 認証トークン待機
+    console.log('[X-LOGIN] Step 6: Waiting for auth_token...');
+    logs.steps.push({ step: 6, action: 'Wait for auth', time: Date.now() });
     
     let authToken = null;
     
@@ -282,7 +225,7 @@ async function loginToX(page, username, password) {
       
       if (authToken) {
         console.log(`[X-LOGIN] ✅ auth_token found after ${i + 1}s!`);
-        logs.steps.push({ step: 8, status: 'success', duration: i + 1, time: Date.now() });
+        logs.steps.push({ step: 6, status: 'success', duration: i + 1, time: Date.now() });
         break;
       }
       
@@ -296,7 +239,7 @@ async function loginToX(page, username, password) {
         
         if (authToken) {
           console.log('[X-LOGIN] ✅ auth_token found after redirect!');
-          logs.steps.push({ step: 8, status: 'success', duration: i + 1, time: Date.now() });
+          logs.steps.push({ step: 6, status: 'success', duration: i + 1, time: Date.now() });
         }
         break;
       }
@@ -327,7 +270,7 @@ async function loginToX(page, username, password) {
       
       return {
         success: false,
-        message: 'Login timeout - auth_token not received after 60 seconds',
+        message: 'Login timeout - auth_token not received',
         currentUrl,
         cookies: finalCookies,
         logs
@@ -337,7 +280,6 @@ async function loginToX(page, username, password) {
   } catch (error) {
     console.error('[X-LOGIN] ========== ❌ ERROR ==========');
     console.error('[X-LOGIN] Error:', error.message);
-    console.error('[X-LOGIN] Stack:', error.stack);
     
     logs.errors.push({
       message: error.message,
