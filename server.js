@@ -584,6 +584,90 @@ app.get('/health', (req, res) => {
 const { loginToX } = require('./x-login');
 
 let xLoginPage = null;
+// ===== 以下を const { loginToX } = require('./x-login'); の直後に追加 =====
+
+/**
+ * Xページアクセステスト関数
+ */
+async function testXPageAccess(page) {
+  console.log('[X-TEST] Testing X page access without login...');
+  
+  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+  const results = { tests: [] };
+  
+  // Test 1: Xトップページ
+  console.log('[X-TEST] Test 1: Accessing https://x.com/');
+  try {
+    await page.goto('https://x.com/', {
+      waitUntil: ['load', 'domcontentloaded'],
+      timeout: 30000
+    });
+    
+    await sleep(3000);
+    
+    const pageInfo1 = await page.evaluate(() => ({
+      url: window.location.href,
+      title: document.title,
+      bodyText: document.body.innerText.substring(0, 500),
+      hasError: document.body.innerText.includes('Error') && 
+                document.body.innerText.includes('Oops')
+    }));
+    
+    console.log('[X-TEST] Top page result:', JSON.stringify(pageInfo1, null, 2));
+    results.tests.push({ page: 'top', ...pageInfo1 });
+    
+  } catch (e) {
+    console.log('[X-TEST] Top page error:', e.message);
+    results.tests.push({ page: 'top', error: e.message });
+  }
+  
+  // Test 2: 特定のユーザープロフィール
+  console.log('[X-TEST] Test 2: Accessing https://x.com/elonmusk');
+  try {
+    await page.goto('https://x.com/elonmusk', {
+      waitUntil: ['load', 'domcontentloaded'],
+      timeout: 30000
+    });
+    
+    await sleep(3000);
+    
+    const pageInfo2 = await page.evaluate(() => ({
+      url: window.location.href,
+      title: document.title,
+      bodyText: document.body.innerText.substring(0, 500),
+      hasError: document.body.innerText.includes('Error') && 
+                document.body.innerText.includes('Oops'),
+      hasContent: document.body.innerText.length > 1000
+    }));
+    
+    console.log('[X-TEST] Profile page result:', JSON.stringify(pageInfo2, null, 2));
+    results.tests.push({ page: 'profile', ...pageInfo2 });
+    
+  } catch (e) {
+    console.log('[X-TEST] Profile page error:', e.message);
+    results.tests.push({ page: 'profile', error: e.message });
+  }
+  
+  // 結果サマリー
+  const blockedCount = results.tests.filter(t => t.hasError).length;
+  const successCount = results.tests.filter(t => !t.hasError && !t.error).length;
+  
+  console.log('[X-TEST] ========== SUMMARY ==========');
+  console.log(`[X-TEST] Total tests: ${results.tests.length}`);
+  console.log(`[X-TEST] Success: ${successCount}`);
+  console.log(`[X-TEST] Blocked: ${blockedCount}`);
+  
+  results.summary = {
+    total: results.tests.length,
+    success: successCount,
+    blocked: blockedCount,
+    conclusion: blockedCount === results.tests.length 
+      ? 'All pages blocked - X blocks Render completely'
+      : 'Only login page is blocked - Regular pages accessible'
+  };
+  
+  return results;
+}
 
 // server.js の initXLoginPage() を以下に完全に置き換え
 
@@ -922,6 +1006,123 @@ app.get('/api/x-cookies', async (req, res) => {
         success: false,
         error: 'No active session. Please login first.' 
       });
+      // ===== 以下を app.get('/api/x-cookies'...) の直後に追加 =====
+
+/**
+ * GET /api/x-test - Xページアクセステスト
+ */
+app.get('/api/x-test', async (req, res) => {
+  try {
+    console.log('[API] Starting X page access test...');
+
+    if (!xLoginPage) {
+      xLoginPage = await initXLoginPage();
+    }
+
+    const results = await testXPageAccess(xLoginPage);
+
+    return res.json({
+      success: true,
+      results
+    });
+
+  } catch (error) {
+    console.error('[API] Test error:', error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/x-inject-cookies - Cookie注入
+ */
+app.post('/api/x-inject-cookies', async (req, res) => {
+  const { authToken, ct0Token } = req.body;
+
+  if (!authToken || !ct0Token) {
+    return res.status(400).json({ 
+      success: false,
+      error: 'authToken and ct0Token are required' 
+    });
+  }
+
+  try {
+    console.log('[API] Injecting X cookies...');
+
+    if (!xLoginPage) {
+      xLoginPage = await initXLoginPage();
+    }
+
+    // Cookieを設定
+    await xLoginPage.setCookie(
+      {
+        name: 'auth_token',
+        value: authToken,
+        domain: '.x.com',
+        path: '/',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'None'
+      },
+      {
+        name: 'ct0',
+        value: ct0Token,
+        domain: '.x.com',
+        path: '/',
+        secure: true,
+        sameSite: 'Lax'
+      }
+    );
+
+    console.log('[API] Cookies set, navigating to X home...');
+
+    // Xのホームに移動して確認
+    await xLoginPage.goto('https://x.com/home', {
+      waitUntil: 'networkidle2',
+      timeout: 30000
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    const currentUrl = xLoginPage.url();
+    const isLoggedIn = !currentUrl.includes('/login');
+
+    if (isLoggedIn) {
+      const allCookies = await xLoginPage.cookies();
+      
+      console.log('[API] ✅ Cookie injection successful!');
+      
+      return res.json({
+        success: true,
+        message: 'Cookies injected successfully',
+        isLoggedIn: true,
+        currentUrl,
+        cookies: allCookies.map(c => ({
+          name: c.name,
+          domain: c.domain
+        }))
+      });
+    } else {
+      console.log('[API] ❌ Cookie injection failed - redirected to login');
+      
+      return res.status(401).json({
+        success: false,
+        message: 'Cookie injection failed - not logged in',
+        currentUrl
+      });
+    }
+
+  } catch (error) {
+    console.error('[API] Cookie injection error:', error.message);
+    return res.status(500).json({
+      success: false,
+      error: 'Cookie injection failed',
+      message: error.message
+    });
+  }
+});
     }
 
     const cookies = await xLoginPage.cookies();
