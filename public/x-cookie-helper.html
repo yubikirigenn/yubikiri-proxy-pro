@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>X Cookie Helper</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
+      color: #fff;
+      padding: 40px 20px;
+      min-height: 100vh;
+    }
+    .container { max-width: 800px; margin: 0 auto; }
+    h1 {
+      font-size: 32px;
+      margin-bottom: 20px;
+      text-align: center;
+      background: linear-gradient(135deg, #fff 0%, rgba(255,255,255,0.9) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .card {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px;
+      padding: 30px;
+      margin-bottom: 20px;
+    }
+    .step {
+      margin-bottom: 30px;
+    }
+    .step h2 {
+      font-size: 18px;
+      color: #b0b0b0;
+      margin-bottom: 10px;
+    }
+    .step p, .step li {
+      font-size: 14px;
+      line-height: 1.8;
+      color: rgba(255,255,255,0.7);
+      margin-bottom: 8px;
+    }
+    .step ol {
+      margin-left: 20px;
+    }
+    label {
+      display: block;
+      color: rgba(255,255,255,0.7);
+      font-size: 13px;
+      margin-bottom: 8px;
+      margin-top: 15px;
+    }
+    input, textarea {
+      width: 100%;
+      padding: 12px 16px;
+      border: 1px solid rgba(255,255,255,0.2);
+      background: rgba(255,255,255,0.05);
+      color: #fff;
+      border-radius: 6px;
+      font-size: 14px;
+      font-family: 'Courier New', monospace;
+    }
+    textarea {
+      min-height: 80px;
+      resize: vertical;
+    }
+    input:focus, textarea:focus {
+      outline: none;
+      background: rgba(255,255,255,0.1);
+      border-color: rgba(255,255,255,0.4);
+    }
+    button {
+      width: 100%;
+      padding: 14px 24px;
+      background: #b0b0b0;
+      color: #1a1a1a;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      margin-top: 20px;
+    }
+    button:hover:not(:disabled) {
+      background: #d0d0d0;
+      transform: translateY(-2px);
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .result {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 6px;
+      padding: 16px;
+      font-size: 13px;
+      display: none;
+      margin-top: 20px;
+    }
+    .result.active { display: block; }
+    .result.success { border-color: rgba(76,175,80,0.5); background: rgba(76,175,80,0.1); }
+    .result.error { border-color: rgba(244,67,54,0.5); background: rgba(244,67,54,0.1); }
+    .result pre {
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      color: rgba(255,255,255,0.8);
+    }
+    code {
+      background: rgba(0,0,0,0.3);
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: 'Courier New', monospace;
+      font-size: 13px;
+    }
+    .warning {
+      background: rgba(255,193,7,0.1);
+      border: 1px solid rgba(255,193,7,0.3);
+      border-radius: 6px;
+      padding: 15px;
+      margin: 20px 0;
+      color: rgba(255,255,255,0.9);
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🍪 X Cookie Helper</h1>
+    
+    <div class="card">
+      <div class="step">
+        <h2>📋 手順</h2>
+        <p>XへのログインをProxyで使用するには、ブラウザから手動でログインして、Cookieをこのサーバーに注入する必要があります。</p>
+      </div>
+
+      <div class="step">
+        <h2>ステップ1: Xにログイン</h2>
+        <ol>
+          <li>新しいタブで <a href="https://x.com/i/flow/login" target="_blank" style="color: #b0b0b0;">https://x.com/i/flow/login</a> を開く</li>
+          <li>通常通りログインする</li>
+          <li>ログインが完了したら次のステップへ</li>
+        </ol>
+      </div>
+
+      <div class="step">
+        <h2>ステップ2: Cookieを取得</h2>
+        <ol>
+          <li>Xのタブで <code>F12</code> を押してDevToolsを開く</li>
+          <li><strong>Application</strong> タブ（または <strong>Storage</strong>）をクリック</li>
+          <li>左側の <strong>Cookies</strong> → <strong>https://x.com</strong> を選択</li>
+          <li><code>auth_token</code> を探して、Valueをコピー</li>
+          <li><code>ct0</code> を探して、Valueをコピー</li>
+        </ol>
+      </div>
+
+      <div class="warning">
+        ⚠️ <strong>セキュリティ警告:</strong> これらのCookieは重要な認証情報です。他人と共有しないでください。
+      </div>
+
+      <div class="step">
+        <h2>ステップ3: Cookieを注入</h2>
+        
+        <label for="authToken">auth_token の値</label>
+        <textarea id="authToken" placeholder="abcdef1234567890..."></textarea>
+        
+        <label for="ct0Token">ct0 の値</label>
+        <input type="text" id="ct0Token" placeholder="1234567890abcdef...">
+        
+        <button id="injectBtn">Cookieを注入</button>
+      </div>
+
+      <div id="result" class="result"></div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-bottom: 15px;">💡 トラブルシューティング</h2>
+      <p style="font-size: 13px; line-height: 1.8; color: rgba(255,255,255,0.7);">
+        <strong>Cookieが見つからない場合:</strong><br>
+        • Xに正しくログインできているか確認<br>
+        • DevToolsで「x.com」ドメインを選択しているか確認<br>
+        • Cookieがフィルタされていないか確認<br><br>
+        
+        <strong>注入が失敗する場合:</strong><br>
+        • Cookieの値が完全にコピーされているか確認<br>
+        • 余分な空白や改行が含まれていないか確認<br>
+        • Cookieの有効期限が切れていないか確認
+      </p>
+    </div>
+  </div>
+
+  <script>
+    const injectBtn = document.getElementById('injectBtn');
+    const result = document.getElementById('result');
+
+    injectBtn.addEventListener('click', async () => {
+      const authToken = document.getElementById('authToken').value.trim();
+      const ct0Token = document.getElementById('ct0Token').value.trim();
+
+      if (!authToken || !ct0Token) {
+        showResult('❌ auth_tokenとct0の両方を入力してください', 'error');
+        return;
+      }
+
+      injectBtn.disabled = true;
+      injectBtn.textContent = '注入中...';
+
+      try {
+        const response = await fetch('/api/x-inject-cookies', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ authToken, ct0Token })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          showResult(
+            `✅ Cookie注入成功!\n\n` +
+            `ログイン状態: ${data.isLoggedIn ? 'ログイン済み' : '未ログイン'}\n` +
+            `現在のURL: ${data.currentUrl}\n` +
+            `Cookie数: ${data.cookies.length}\n\n` +
+            `これでProxyからXにアクセスできます！`,
+            'success'
+          );
+        } else {
+          showResult(
+            `❌ Cookie注入失敗\n\n` +
+            `エラー: ${data.message || data.error}\n\n` +
+            `Cookieの値が正しいか確認してください。`,
+            'error'
+          );
+        }
+      } catch (error) {
+        showResult(`❌ リクエストエラー: ${error.message}`, 'error');
+      } finally {
+        injectBtn.disabled = false;
+        injectBtn.textContent = 'Cookieを注入';
+      }
+    });
+
+    function showResult(text, type) {
+      result.innerHTML = `<pre>${text}</pre>`;
+      result.className = `result ${type} active`;
+    }
+  </script>
+</body>
+</html>
