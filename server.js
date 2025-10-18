@@ -1161,8 +1161,6 @@ process.on('SIGTERM', async () => {
   process.exit(0);
 });
 
-const { testXPageAccess } = require('./x-page-test');
-
 /**
  * GET /api/x-test - Xページアクセステスト
  */
