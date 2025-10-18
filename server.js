@@ -296,63 +296,95 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
     const staticExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.css', '.js', '.woff', '.woff2', '.ttf', '.svg', '.ico', '.mp4', '.webm', '.json'];
     
     const shouldDirectFetch = staticExtensions.includes(ext) ||
-                             parsedUrl.pathname.includes('/api/') ||
-                             parsedUrl.pathname.includes('/graphql/') ||
-                             parsedUrl.pathname.includes('/1.1/') ||
-                             parsedUrl.pathname.includes('/i/api/') ||
-                             parsedUrl.pathname.includes('/2/') ||
-                             parsedUrl.hostname.startsWith('api.') ||
-                             parsedUrl.hostname.includes('google') ||
-                             (parsedUrl.hostname.includes('x.com') && parsedUrl.pathname.startsWith('/i/'));
-    
-    if (shouldDirectFetch) {
-      const headers = {
-        'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': req.headers['accept'] || '*/*',
-        'Accept-Language': req.headers['accept-language'] || 'en-US,en;q=0.9',
-        'Accept-Encoding': req.headers['accept-encoding'] || 'gzip, deflate, br',
-      };
+                         parsedUrl.pathname.includes('/api/') ||
+                         parsedUrl.pathname.includes('/graphql/') ||
+                         parsedUrl.pathname.includes('/1.1/') ||
+                         parsedUrl.pathname.includes('/i/api/') ||
+                         parsedUrl.pathname.includes('/2/') ||
+                         parsedUrl.pathname.startsWith('/i/api/') ||
+                         parsedUrl.hostname.startsWith('api.') ||
+                         parsedUrl.hostname.includes('google') ||
+                         // Xの重いページもaxiosで取得
+                         (parsedUrl.hostname.includes('x.com') && 
+                          (parsedUrl.pathname === '/home' || 
+                           parsedUrl.pathname.startsWith('/i/') ||
+                           parsedUrl.pathname.includes('/status/')));
 
-      const refererUrl = new url.URL(targetUrl);
-      headers['Referer'] = `${refererUrl.protocol}//${refererUrl.host}/`;
-      headers['Origin'] = `${refererUrl.protocol}//${refererUrl.host}`;
+   if (shouldDirectFetch) {
+  const headers = {
+    'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'Accept': req.headers['accept'] || '*/*',
+    'Accept-Language': req.headers['accept-language'] || 'en-US,en;q=0.9',
+    'Accept-Encoding': req.headers['accept-encoding'] || 'gzip, deflate, br',
+  };
 
-      if (req.headers.cookie) {
-        headers['Cookie'] = req.headers.cookie;
-      }
+  const refererUrl = new url.URL(targetUrl);
+  headers['Referer'] = `${refererUrl.protocol}//${refererUrl.host}/`;
+  headers['Origin'] = `${refererUrl.protocol}//${refererUrl.host}`;
 
-      if (req.headers.authorization) {
-        headers['Authorization'] = req.headers.authorization;
-      }
-
-      const response = await axios({
-        method: 'GET',
-        url: targetUrl,
-        headers: headers,
-        responseType: 'arraybuffer',
-        timeout: 15000,
-        validateStatus: () => true,
-        maxRedirects: 5
-      });
-
-      const contentType = response.headers['content-type'] || '';
+  // Cookieを引き継ぐ（重要！）
+  if (req.headers.cookie) {
+    headers['Cookie'] = req.headers.cookie;
+  }
+  
+  // xLoginPageからCookieを取得して追加（ログイン状態を維持）
+  if (xLoginPage && parsedUrl.hostname.includes('x.com')) {
+    try {
+      const pageCookies = await xLoginPage.cookies();
+      const cookieString = pageCookies
+        .filter(c => c.domain.includes('x.com') || c.domain.includes('twitter.com'))
+        .map(c => `${c.name}=${c.value}`)
+        .join('; ');
       
-      res.setHeader('Content-Type', contentType);
-      
-      if (response.headers['set-cookie']) {
-        res.setHeader('Set-Cookie', response.headers['set-cookie']);
+      if (cookieString) {
+        headers['Cookie'] = cookieString;
+        console.log('📍 Using logged-in cookies for X API request');
       }
-      
-      if (response.headers['cache-control']) {
-        res.setHeader('Cache-Control', response.headers['cache-control']);
-      }
-
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-      
-      return res.send(response.data);
+    } catch (e) {
+      console.log('⚠️ Could not get cookies from xLoginPage:', e.message);
     }
+  }
+
+  if (req.headers.authorization) {
+    headers['Authorization'] = req.headers.authorization;
+  }
+  
+  // X APIの場合は追加ヘッダー
+  if (parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com')) {
+    headers['x-twitter-active-user'] = 'yes';
+    headers['x-twitter-client-language'] = 'en';
+  }
+
+  console.log('🔄 Direct fetch:', targetUrl);
+
+  const response = await axios({
+    method: 'GET',
+    url: targetUrl,
+    headers: headers,
+    responseType: 'arraybuffer',
+    timeout: 30000,
+    validateStatus: () => true,
+    maxRedirects: 5
+  });
+
+  const contentType = response.headers['content-type'] || '';
+  
+  res.setHeader('Content-Type', contentType);
+  
+  if (response.headers['set-cookie']) {
+    res.setHeader('Set-Cookie', response.headers['set-cookie']);
+  }
+  
+  if (response.headers['cache-control']) {
+    res.setHeader('Cache-Control', response.headers['cache-control']);
+  }
+
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  
+  return res.send(response.data);
+}
 
     const browserInstance = await initBrowser();
     page = await browserInstance.newPage();
