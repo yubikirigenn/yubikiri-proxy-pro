@@ -1006,7 +1006,28 @@ app.get('/api/x-cookies', async (req, res) => {
         success: false,
         error: 'No active session. Please login first.' 
       });
-      // ===== 以下を app.get('/api/x-cookies'...) の直後に追加 =====
+    }
+
+    const cookies = await xLoginPage.cookies();
+    const authToken = cookies.find(c => c.name === 'auth_token');
+
+    return res.json({
+      success: true,
+      isLoggedIn: !!authToken,
+      cookies: cookies.map(c => ({
+        name: c.name,
+        domain: c.domain
+      })),
+      currentUrl: xLoginPage.url()
+    });
+
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
 
 /**
  * GET /api/x-test - Xページアクセステスト
@@ -1055,7 +1076,6 @@ app.post('/api/x-inject-cookies', async (req, res) => {
       xLoginPage = await initXLoginPage();
     }
 
-    // Cookieを設定
     await xLoginPage.setCookie(
       {
         name: 'auth_token',
@@ -1078,7 +1098,6 @@ app.post('/api/x-inject-cookies', async (req, res) => {
 
     console.log('[API] Cookies set, navigating to X home...');
 
-    // Xのホームに移動して確認
     await xLoginPage.goto('https://x.com/home', {
       waitUntil: 'networkidle2',
       timeout: 30000
@@ -1105,7 +1124,7 @@ app.post('/api/x-inject-cookies', async (req, res) => {
         }))
       });
     } else {
-      console.log('[API] ❌ Cookie injection failed - redirected to login');
+      console.log('[API] ❌ Cookie injection failed');
       
       return res.status(401).json({
         success: false,
@@ -1123,28 +1142,6 @@ app.post('/api/x-inject-cookies', async (req, res) => {
     });
   }
 });
-    }
-
-    const cookies = await xLoginPage.cookies();
-    const authToken = cookies.find(c => c.name === 'auth_token');
-
-    return res.json({
-      success: true,
-      isLoggedIn: !!authToken,
-      cookies: cookies.map(c => ({
-        name: c.name,
-        domain: c.domain
-      })),
-      currentUrl: xLoginPage.url()
-    });
-
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
 
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
@@ -1159,31 +1156,4 @@ process.on('SIGTERM', async () => {
     await browser.close().catch(() => {});
   }
   process.exit(0);
-});
-
-/**
- * GET /api/x-test - Xページアクセステスト
- */
-app.get('/api/x-test', async (req, res) => {
-  try {
-    console.log('[API] Starting X page access test...');
-
-    if (!xLoginPage) {
-      xLoginPage = await initXLoginPage();
-    }
-
-    const results = await testXPageAccess(xLoginPage);
-
-    return res.json({
-      success: true,
-      results
-    });
-
-  } catch (error) {
-    console.error('[API] Test error:', error.message);
-    return res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
 });
