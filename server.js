@@ -1059,6 +1059,66 @@ app.get('/api/x-test', async (req, res) => {
 /**
  * POST /api/x-inject-cookies - Cookie注入
  */
+app.get('/api/x-cookies', async (req, res) => {
+  try {
+    if (!xLoginPage) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'No active session. Please login first.' 
+      });
+    }
+
+    const cookies = await xLoginPage.cookies();
+    const authToken = cookies.find(c => c.name === 'auth_token');
+
+    return res.json({
+      success: true,
+      isLoggedIn: !!authToken,
+      cookies: cookies.map(c => ({
+        name: c.name,
+        domain: c.domain
+      })),
+      currentUrl: xLoginPage.url()
+    });
+
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/x-test - Xページアクセステスト
+ */
+app.get('/api/x-test', async (req, res) => {
+  try {
+    console.log('[API] Starting X page access test...');
+
+    if (!xLoginPage) {
+      xLoginPage = await initXLoginPage();
+    }
+
+    const results = await testXPageAccess(xLoginPage);
+
+    return res.json({
+      success: true,
+      results
+    });
+
+  } catch (error) {
+    console.error('[API] Test error:', error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/x-inject-cookies - Cookie注入
+ */
 app.post('/api/x-inject-cookies', async (req, res) => {
   const { authToken, ct0Token } = req.body;
 
@@ -1203,4 +1263,19 @@ app.post('/api/x-inject-cookies', async (req, res) => {
       message: error.message
     });
   }
+});
+
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+app.listen(PORT, () => {
+  console.log(`🚀 Yubikiri Proxy Pro running on port ${PORT}`);
+});
+
+process.on('SIGTERM', async () => {
+  if (browser) {
+    await browser.close().catch(() => {});
+  }
+  process.exit(0);
 });
