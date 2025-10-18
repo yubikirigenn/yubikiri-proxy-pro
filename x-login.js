@@ -1,7 +1,37 @@
-// x-login.js - Xログイン処理（完全版）
+// x-login.js - JavaScript実行待機版
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Reactアプリがマウントされるまで待つ
+ */
+async function waitForReactApp(page, timeout = 30000) {
+  console.log('[X-LOGIN] Waiting for React app to mount...');
+  
+  const startTime = Date.now();
+  
+  while (Date.now() - startTime < timeout) {
+    const hasInputs = await page.evaluate(() => {
+      const inputs = document.querySelectorAll('input');
+      return inputs.length > 0;
+    });
+    
+    if (hasInputs) {
+      console.log('[X-LOGIN] ✓ React app mounted, inputs found!');
+      return true;
+    }
+    
+    await sleep(1000);
+    
+    if ((Date.now() - startTime) % 5000 === 0) {
+      console.log(`[X-LOGIN] Still waiting... ${Math.floor((Date.now() - startTime) / 1000)}s`);
+    }
+  }
+  
+  console.log('[X-LOGIN] ❌ Timeout waiting for React app');
+  return false;
 }
 
 /**
@@ -20,13 +50,14 @@ async function getPageDebugInfo(page) {
         index: idx,
         type: input.type,
         name: input.name,
-        id: input.id,
         placeholder: input.placeholder,
         autocomplete: input.autocomplete,
-        className: input.className,
         visible: input.offsetWidth > 0 && input.offsetHeight > 0
       })),
-      bodyTextPreview: document.body.innerText.substring(0, 300)
+      bodyTextPreview: document.body.innerText.substring(0, 300),
+      // React root要素の確認
+      hasReactRoot: !!document.querySelector('#react-root'),
+      reactRootContent: document.querySelector('#react-root')?.innerHTML.length || 0
     };
   });
 }
@@ -49,34 +80,53 @@ async function loginToX(page, username, password) {
     logs.steps.push({ step: 1, action: 'Navigate', time: Date.now() });
     
     await page.goto('https://x.com/i/flow/login', {
-      waitUntil: ['load', 'domcontentloaded'],
+      waitUntil: ['load', 'domcontentloaded', 'networkidle2'],
       timeout: 60000
     });
     
-    console.log('[X-LOGIN] Page loaded, waiting 8 seconds...');
-    await sleep(8000);
+    console.log('[X-LOGIN] Page loaded, waiting for React app...');
     
-    // ページ情報取得
-    const pageInfo1 = await getPageDebugInfo(page);
-    console.log('[X-LOGIN] === PAGE INFO AFTER LOAD ===');
-    console.log(JSON.stringify(pageInfo1, null, 2));
-    logs.debug.push({ stage: 'after_load', info: pageInfo1 });
+    // Reactアプリのマウント待機（重要！）
+    const reactMounted = await waitForReactApp(page, 30000);
     
-    if (pageInfo1.inputCount === 0) {
-      console.error('[X-LOGIN] ❌ NO INPUTS FOUND ON PAGE!');
-      logs.errors.push('No input elements found on page');
+    if (!reactMounted) {
+      console.error('[X-LOGIN] ❌ React app did not mount!');
       
-      const html = await page.content();
-      console.log('[X-LOGIN] HTML length:', html.length);
-      console.log('[X-LOGIN] HTML preview:', html.substring(0, 2000));
+      const pageInfo = await getPageDebugInfo(page);
+      console.log('[X-LOGIN] === PAGE INFO ===');
+      console.log(JSON.stringify(pageInfo, null, 2));
+      logs.debug.push({ stage: 'react_mount_failed', info: pageInfo });
       
       return {
         success: false,
-        message: 'No input fields found. X may have blocked the request.',
+        message: 'React app failed to mount. X may be blocking automated access.',
         currentUrl: page.url(),
         logs
       };
     }
+    
+    // さらに2秒待機（UIが安定するまで）
+    await sleep(2000);
+    
+    // ページ情報取得
+    const pageInfo1 = await getPageDebugInfo(page);
+    console.log('[X-LOGIN] === PAGE INFO AFTER REACT MOUNT ===');
+    console.log(JSON.stringify(pageInfo1, null, 2));
+    logs.debug.push({ stage: 'after_mount', info: pageInfo1 });
+    
+    if (pageInfo1.inputCount === 0) {
+      console.error('[X-LOGIN] ❌ Still no inputs found!');
+      logs.errors.push('No input elements after React mount');
+      
+      return {
+        success: false,
+        message: 'No input fields found even after React mounted.',
+        currentUrl: page.url(),
+        logs
+      };
+    }
+    
+    logs.steps.push({ step: 1, status: 'success', time: Date.now() });
     
     // Step 2: ユーザー名入力
     console.log('[X-LOGIN] Step 2: Finding username input...');
@@ -90,7 +140,8 @@ async function loginToX(page, username, password) {
           console.log(`Found visible input at index ${i}:`, {
             type: input.type,
             name: input.name,
-            placeholder: input.placeholder
+            placeholder: input.placeholder,
+            autocomplete: input.autocomplete
           });
           return i;
         }
@@ -133,7 +184,31 @@ async function loginToX(page, username, password) {
     await page.keyboard.press('Enter');
     console.log('[X-LOGIN] ✓ Enter pressed');
     logs.steps.push({ step: 3, status: 'success', time: Date.now() });
-    await sleep(8000);
+    
+    // Reactの再レンダリング待機
+    console.log('[X-LOGIN] Waiting for password field to appear...');
+    await sleep(5000);
+    
+    // パスワードフィールドが表示されるまで待つ
+    let passwordFieldAppeared = false;
+    for (let i = 0; i < 10; i++) {
+      const hasPasswordField = await page.evaluate(() => {
+        const inputs = Array.from(document.querySelectorAll('input'));
+        return inputs.some(input => input.type === 'password' && input.offsetWidth > 0);
+      });
+      
+      if (hasPasswordField) {
+        passwordFieldAppeared = true;
+        console.log(`[X-LOGIN] ✓ Password field appeared after ${i + 1}s`);
+        break;
+      }
+      
+      await sleep(1000);
+    }
+    
+    if (!passwordFieldAppeared) {
+      console.log('[X-LOGIN] ⚠ Password field did not appear, checking for verification...');
+    }
     
     const pageInfo2 = await getPageDebugInfo(page);
     console.log('[X-LOGIN] === PAGE INFO AFTER NEXT ===');
@@ -170,7 +245,7 @@ async function loginToX(page, username, password) {
         
         return {
           success: false,
-          message: 'Additional verification required',
+          message: 'Additional verification required (phone/email)',
           needsVerification: true,
           currentUrl: page.url(),
           logs
