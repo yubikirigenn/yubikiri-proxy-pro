@@ -284,6 +284,8 @@ html = html.replace(/<head[^>]*>/i, (match) => match + interceptScript);
   return html;
 }
 
+// server.js の修正部分（app.get('/proxy/:encodedUrl*', ...) 内）
+
 app.get('/proxy/:encodedUrl*', async (req, res) => {
   let page;
   try {
@@ -293,189 +295,146 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
     console.log('📡 Proxying:', targetUrl);
     
     const parsedUrl = new url.URL(targetUrl);
-const ext = path.extname(parsedUrl.pathname).toLowerCase();
-const staticExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.css', '.js', '.woff', '.woff2', '.ttf', '.svg', '.ico', '.mp4', '.webm', '.json'];
+    const ext = path.extname(parsedUrl.pathname).toLowerCase();
+    const staticExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.css', '.js', '.woff', '.woff2', '.ttf', '.svg', '.ico', '.mp4', '.webm', '.json'];
 
-const shouldDirectFetch = staticExtensions.includes(ext) ||
-                         parsedUrl.pathname.includes('/api/') ||
-                         parsedUrl.pathname.includes('/graphql/') ||
-                         parsedUrl.pathname.includes('/1.1/') ||
-                         parsedUrl.pathname.includes('/i/api/') ||
-                         parsedUrl.pathname.includes('/2/') ||
-                         parsedUrl.hostname.startsWith('api.') ||
-                         parsedUrl.hostname.includes('google');
-                         // Xの重いページもaxiosで取得
-                         (parsedUrl.hostname.includes('x.com') && 
-                          (parsedUrl.pathname === '/home' || 
-                           parsedUrl.pathname.startsWith('/i/') ||
-                           parsedUrl.pathname.includes('/status/')));
+    const shouldDirectFetch = staticExtensions.includes(ext) ||
+                             parsedUrl.pathname.includes('/api/') ||
+                             parsedUrl.pathname.includes('/graphql/') ||
+                             parsedUrl.pathname.includes('/1.1/') ||
+                             parsedUrl.pathname.includes('/i/api/') ||
+                             parsedUrl.pathname.includes('/2/') ||
+                             parsedUrl.hostname.startsWith('api.') ||
+                             parsedUrl.hostname.includes('google');
 
-   if (shouldDirectFetch) {
-  const headers = {
-    'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    'Accept': req.headers['accept'] || '*/*',
-    'Accept-Language': req.headers['accept-language'] || 'en-US,en;q=0.9',
-    'Accept-Encoding': req.headers['accept-encoding'] || 'gzip, deflate, br',
-  };
+    if (shouldDirectFetch) {
+      const headers = {
+        'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': req.headers['accept'] || '*/*',
+        'Accept-Language': req.headers['accept-language'] || 'en-US,en;q=0.9',
+        'Accept-Encoding': req.headers['accept-encoding'] || 'gzip, deflate, br',
+      };
 
-  const refererUrl = new url.URL(targetUrl);
-  headers['Referer'] = `${refererUrl.protocol}//${refererUrl.host}/`;
-  headers['Origin'] = `${refererUrl.protocol}//${refererUrl.host}`;
+      const refererUrl = new url.URL(targetUrl);
+      headers['Referer'] = `${refererUrl.protocol}//${refererUrl.host}/`;
+      headers['Origin'] = `${refererUrl.protocol}//${refererUrl.host}`;
 
-  // Cookieを引き継ぐ（重要！）
-  if (req.headers.cookie) {
-    headers['Cookie'] = req.headers.cookie;
-  }
-  
-  // キャッシュされたCookieを使用（ログイン状態を維持）
-if (parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com')) {
-  let cookieString = '';
-  
-  if (cachedXCookies) {
-    cookieString = cachedXCookies
-      .map(c => `${c.name}=${c.value}`)
-      .join('; ');
-    console.log('📍 Using cached cookies');
-  } else if (xLoginPage) {
-    try {
-      const pageCookies = await xLoginPage.cookies();
-      cookieString = pageCookies
-        .filter(c => c.domain.includes('x.com') || c.domain.includes('twitter.com'))
-        .map(c => `${c.name}=${c.value}`)
-        .join('; ');
-      console.log('📍 Using xLoginPage cookies');
-    } catch (e) {
-      console.log('⚠️ Could not get cookies:', e.message);
-    }
-  }
-  
-  if (cookieString) {
-    headers['Cookie'] = cookieString;
-  }
-}
-
-  if (req.headers.authorization) {
-    headers['Authorization'] = req.headers.authorization;
-  }
-  
-  // X APIの場合は追加ヘッダー
-  if (parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com')) {
-    headers['x-twitter-active-user'] = 'yes';
-    headers['x-twitter-client-language'] = 'en';
-  }
-
-  console.log('🔄 Direct fetch:', targetUrl);
-
-  const response = await axios({
-    method: 'GET',
-    url: targetUrl,
-    headers: headers,
-    responseType: 'arraybuffer',
-    timeout: 30000,
-    validateStatus: () => true,
-    maxRedirects: 5
-  });
-
-  const contentType = response.headers['content-type'] || '';
-  
-  res.setHeader('Content-Type', contentType);
-  
-  if (response.headers['set-cookie']) {
-    res.setHeader('Set-Cookie', response.headers['set-cookie']);
-  }
-  
-  if (response.headers['cache-control']) {
-    res.setHeader('Cache-Control', response.headers['cache-control']);
-  }
-
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  // CORS対応（約340行目付近）
-res.setHeader('Access-Control-Allow-Origin', '*');
-res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-res.setHeader('Access-Control-Allow-Headers', '*');
-res.setHeader('Access-Control-Allow-Credentials', 'true');
-
-return res.send(response.data);
-}
-
-    // HTMLページはPuppeteerで取得
-const browserInstance = await initBrowser();
-
-// xLoginPageを再利用（Cookieが設定済み）
-if (xLoginPage && cachedXCookies) {
-  console.log('📍 Reusing xLoginPage with cached cookies');
-  page = xLoginPage;
-} else {
-  console.log('📍 Creating new page');
-  page = await browserInstance.newPage();
-  
-  await page.setViewport({ width: 1920, height: 1080 });
-  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
-
-  // Googleブロック
-  await page.setRequestInterception(true);
-  page.on('request', (request) => {
-    const requestUrl = request.url();
-    
-    const isGoogleResource = (
-      requestUrl.includes('google.com') ||
-      requestUrl.includes('gstatic.com') ||
-      requestUrl.includes('googleapis.com') ||
-      requestUrl.includes('doubleclick.net')
-    );
-    
-    if (isGoogleResource) {
-      request.abort();
-      return;
-    }
-    
-    request.continue();
-  });
-
-  // Cookieを設定
-  if (cachedXCookies && (parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com'))) {
-    await page.setCookie(...cachedXCookies);
-    console.log('📍 Set cached cookies to new page');
-  }
-}
-
-    await page.setViewport({ width: 1920, height: 1080 });
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
-
-    await page.setRequestInterception(true);
-    page.on('request', (request) => {
-      const requestUrl = request.url();
-      
-      const isGoogleResource = (
-        requestUrl.includes('google.com') ||
-        requestUrl.includes('gstatic.com') ||
-        requestUrl.includes('googleapis.com') ||
-        requestUrl.includes('doubleclick.net')
-      );
-      
-      if (isGoogleResource) {
-        console.log('🚫 Blocked Google:', requestUrl);
-        request.abort();
-        return;
+      if (req.headers.cookie) {
+        headers['Cookie'] = req.headers.cookie;
       }
       
-      request.continue();
-    });
+      // キャッシュされたCookieを使用
+      if (cachedXCookies && (parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com'))) {
+        let cookieString = cachedXCookies
+          .map(c => `${c.name}=${c.value}`)
+          .join('; ');
+        headers['Cookie'] = cookieString;
+        console.log('🍪 Using cached cookies for API request');
+      }
 
-    if (req.headers.cookie) {
-      const cookies = req.headers.cookie.split(';').map(c => {
-        const [name, ...valueParts] = c.trim().split('=');
-        return { name, value: valueParts.join('='), domain: new url.URL(targetUrl).hostname };
+      if (req.headers.authorization) {
+        headers['Authorization'] = req.headers.authorization;
+      }
+      
+      if (parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com')) {
+        headers['x-twitter-active-user'] = 'yes';
+        headers['x-twitter-client-language'] = 'en';
+      }
+
+      console.log('📄 Direct fetch:', targetUrl);
+
+      const response = await axios({
+        method: 'GET',
+        url: targetUrl,
+        headers: headers,
+        responseType: 'arraybuffer',
+        timeout: 30000,
+        validateStatus: () => true,
+        maxRedirects: 5
       });
-      await page.setCookie(...cookies).catch(() => {});
+
+      const contentType = response.headers['content-type'] || '';
+      
+      res.setHeader('Content-Type', contentType);
+      
+      if (response.headers['set-cookie']) {
+        res.setHeader('Set-Cookie', response.headers['set-cookie']);
+      }
+      
+      if (response.headers['cache-control']) {
+        res.setHeader('Cache-Control', response.headers['cache-control']);
+      }
+
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+
+      return res.send(response.data);
     }
 
+    // HTMLページはPuppeteerで取得
+    const browserInstance = await initBrowser();
+
+    // xLoginPageを再利用（Cookieが設定済み）
+    if (xLoginPage && cachedXCookies) {
+      console.log('🔄 Reusing xLoginPage with cached cookies');
+      page = xLoginPage;
+    } else {
+      console.log('📍 Creating new page');
+      page = await browserInstance.newPage();
+      
+      await page.setViewport({ width: 1920, height: 1080 });
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
+
+      // ⚠️ 重要: リクエストインターセプションは1回だけ設定
+      await page.setRequestInterception(true);
+      
+      // ⚠️ 修正: リクエストハンドラーの重複を防ぐ
+      page.removeAllListeners('request'); // 既存のリスナーをクリア
+      
+      page.on('request', (request) => {
+        const requestUrl = request.url();
+        
+        // 既に処理済みの場合はスキップ
+        if (request.isInterceptResolutionHandled()) {
+          return;
+        }
+        
+        const isGoogleResource = (
+          requestUrl.includes('google.com') ||
+          requestUrl.includes('gstatic.com') ||
+          requestUrl.includes('googleapis.com') ||
+          requestUrl.includes('doubleclick.net')
+        );
+        
+        if (isGoogleResource) {
+          console.log('🚫 Blocked Google:', requestUrl);
+          request.abort().catch(() => {});
+          return;
+        }
+        
+        request.continue().catch(() => {});
+      });
+
+      // Cookieを事前にセット
+      if (cachedXCookies && (parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com'))) {
+        try {
+          await page.setCookie(...cachedXCookies);
+          console.log('🍪 Set cached cookies before navigation');
+        } catch (e) {
+          console.log('⚠️ Could not set cookies:', e.message);
+        }
+      }
+    }
+
+    // ステルスモード設定
     await page.evaluateOnNewDocument(() => {
+      delete Object.getPrototypeOf(navigator).webdriver;
+      
       Object.defineProperty(navigator, 'webdriver', {
-        get: () => false,
-        configurable: true
+        get: () => undefined,
+        configurable: false
       });
 
       window.chrome = {
@@ -522,60 +481,22 @@ if (xLoginPage && cachedXCookies) {
           event.preventDefault();
         }
       });
-
-      const observer = new MutationObserver((mutations) => {
-        for (const mutation of mutations) {
-          for (const node of mutation.addedNodes) {
-            if (node.nodeType === 1) {
-              if (node.tagName === 'IFRAME' && node.src) {
-                if (node.src.includes('google') || node.src.includes('gstatic')) {
-                  node.remove();
-                }
-              }
-              if (node.tagName === 'SCRIPT' && node.src) {
-                if (node.src.includes('google') || node.src.includes('gstatic')) {
-                  node.remove();
-                }
-              }
-              if (node.id && node.id.includes('g_id')) {
-                node.remove();
-              }
-            }
-          }
-        }
-      });
-
-      if (document.documentElement) {
-        observer.observe(document.documentElement, {
-          childList: true,
-          subtree: true
-        });
-      }
     });
-// Cookieを事前にセット
-if (cachedXCookies && (parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com'))) {
-  try {
-    await page.setCookie(...cachedXCookies);
-    console.log('📍 Set cached cookies before navigation');
-  } catch (e) {
-    console.log('⚠️ Could not set cookies:', e.message);
-  }
-}
 
-await page.goto(targetUrl, {
-  waitUntil: 'networkidle2',
-  timeout: 20000
-}).catch(() => {});
-
+    // ⚠️ 修正: タイムアウトを短縮 & リトライを防ぐ
+    console.log('🌐 Navigating to:', targetUrl);
     await page.goto(targetUrl, {
-      waitUntil: 'networkidle2',
-      timeout: 20000
-    }).catch(() => {});
+      waitUntil: 'domcontentloaded', // networkidle2 → domcontentloaded に変更
+      timeout: 15000 // 20秒 → 15秒に短縮
+    }).catch((e) => {
+      console.log('⚠️ Navigation timeout (non-critical):', e.message);
+    });
 
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    await new Promise(resolve => setTimeout(resolve, 2000)); // 1.5秒 → 2秒
 
     let htmlContent = await page.content();
     
+    // Google要素削除
     htmlContent = htmlContent.replace(/<script[^>]*src=[^>]*google[^>]*>[\s\S]*?<\/script>/gi, '');
     htmlContent = htmlContent.replace(/<script[^>]*src=[^>]*gstatic[^>]*>[\s\S]*?<\/script>/gi, '');
     htmlContent = htmlContent.replace(/<iframe[^>]*google[^>]*>[\s\S]*?<\/iframe>/gi, '');
@@ -597,12 +518,12 @@ await page.goto(targetUrl, {
     res.send(htmlContent);
 
     // xLoginPageは閉じない
-if (page !== xLoginPage) {
-  await page.close().catch(() => {});
-}
+    if (page !== xLoginPage) {
+      await page.close().catch(() => {});
+    }
 
   } catch (error) {
-    if (page) {
+    if (page && page !== xLoginPage) {
       try {
         await page.close().catch(() => {});
       } catch (e) {}
@@ -802,31 +723,26 @@ async function testXPageAccess(page) {
   return results;
 }
 
-// server.js の initXLoginPage() を以下に完全に置き換え
-
-// server.js の initXLoginPage() を以下に完全に置き換え
+// server.js の initXLoginPage() を完全に置き換え
 
 async function initXLoginPage() {
   const browserInstance = await initBrowser();
   const page = await browserInstance.newPage();
 
-  // ビューポート
   await page.setViewport({ 
     width: 1920, 
     height: 1080,
     deviceScaleFactor: 1
   });
 
-  // User-Agent（最新版）
   await page.setUserAgent(
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
   );
 
-  // より詳細なHTTPヘッダー
   await page.setExtraHTTPHeaders({
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.9',
-    'Accept-Encoding': 'gzip, deflate, br, zstd',
+    'Accept-Encoding': 'gzip, deflate, br',
     'Cache-Control': 'max-age=0',
     'Sec-Ch-Ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
     'Sec-Ch-Ua-Mobile': '?0',
@@ -838,24 +754,32 @@ async function initXLoginPage() {
     'Upgrade-Insecure-Requests': '1'
   });
 
-  // Googleブロック
+  // ⚠️ 重要: リクエストインターセプションは1回だけ
   await page.setRequestInterception(true);
+  
+  // ⚠️ 修正: 既存のリスナーをクリア
+  page.removeAllListeners('request');
+  
   page.on('request', (request) => {
     const requestUrl = request.url();
+    
+    // 既に処理済みの場合はスキップ
+    if (request.isInterceptResolutionHandled()) {
+      return;
+    }
     
     if (requestUrl.includes('google.com') || 
         requestUrl.includes('gstatic.com') ||
         requestUrl.includes('googleapis.com')) {
-      request.abort();
+      request.abort().catch(() => {});
       return;
     }
     
-    request.continue();
+    request.continue().catch(() => {});
   });
 
-  // 【超強力】ステルスモード
+  // ステルスモード設定
   await page.evaluateOnNewDocument(() => {
-    // WebDriver完全削除
     delete Object.getPrototypeOf(navigator).webdriver;
     
     Object.defineProperty(navigator, 'webdriver', {
@@ -863,180 +787,49 @@ async function initXLoginPage() {
       configurable: false
     });
 
-    // Chrome オブジェクト
     window.chrome = {
-      app: {
-        isInstalled: false,
-        InstallState: {
-          DISABLED: 'disabled',
-          INSTALLED: 'installed',
-          NOT_INSTALLED: 'not_installed'
-        },
-        RunningState: {
-          CANNOT_RUN: 'cannot_run',
-          READY_TO_RUN: 'ready_to_run',
-          RUNNING: 'running'
-        }
-      },
-      runtime: {
-        OnInstalledReason: {
-          CHROME_UPDATE: 'chrome_update',
-          INSTALL: 'install',
-          SHARED_MODULE_UPDATE: 'shared_module_update',
-          UPDATE: 'update'
-        },
-        OnRestartRequiredReason: {
-          APP_UPDATE: 'app_update',
-          OS_UPDATE: 'os_update',
-          PERIODIC: 'periodic'
-        },
-        PlatformArch: {
-          ARM: 'arm',
-          ARM64: 'arm64',
-          MIPS: 'mips',
-          MIPS64: 'mips64',
-          X86_32: 'x86-32',
-          X86_64: 'x86-64'
-        },
-        PlatformNaclArch: {
-          ARM: 'arm',
-          MIPS: 'mips',
-          MIPS64: 'mips64',
-          X86_32: 'x86-32',
-          X86_64: 'x86-64'
-        },
-        PlatformOs: {
-          ANDROID: 'android',
-          CROS: 'cros',
-          LINUX: 'linux',
-          MAC: 'mac',
-          OPENBSD: 'openbsd',
-          WIN: 'win'
-        },
-        RequestUpdateCheckStatus: {
-          NO_UPDATE: 'no_update',
-          THROTTLED: 'throttled',
-          UPDATE_AVAILABLE: 'update_available'
-        }
-      },
+      app: { isInstalled: false },
+      runtime: {},
       loadTimes: function() {
         return {
           commitLoadTime: Date.now() / 1000 - Math.random(),
           connectionInfo: 'http/1.1',
           finishDocumentLoadTime: Date.now() / 1000 - Math.random(),
           finishLoadTime: Date.now() / 1000 - Math.random(),
-          firstPaintAfterLoadTime: 0,
-          firstPaintTime: Date.now() / 1000 - Math.random(),
           navigationType: 'Other',
-          npnNegotiatedProtocol: 'unknown',
           requestTime: Date.now() / 1000 - Math.random() * 2,
-          startLoadTime: Date.now() / 1000 - Math.random(),
-          wasAlternateProtocolAvailable: false,
-          wasFetchedViaSpdy: false,
-          wasNpnNegotiated: false
+          startLoadTime: Date.now() / 1000 - Math.random()
         };
       },
       csi: function() {
         return {
           onloadT: Date.now(),
           pageT: Date.now() - Math.random() * 1000,
-          startE: Date.now() - Math.random() * 2000,
-          tran: 15
+          startE: Date.now() - Math.random() * 2000
         };
       }
     };
 
-    // Permissions
-    const originalQuery = window.navigator.permissions.query;
-    window.navigator.permissions.query = (parameters) => (
-      parameters.name === 'notifications' ?
-        Promise.resolve({ state: Notification.permission }) :
-        originalQuery(parameters)
-    );
-
-    // Plugins（より詳細）
     Object.defineProperty(navigator, 'plugins', {
-      get: () => {
-        return [
-          {
-            0: {type: "application/x-google-chrome-pdf", suffixes: "pdf", description: "Portable Document Format"},
-            description: "Portable Document Format",
-            filename: "internal-pdf-viewer",
-            length: 1,
-            name: "Chrome PDF Plugin"
-          },
-          {
-            0: {type: "application/pdf", suffixes: "pdf", description: ""},
-            description: "",
-            filename: "mhjfbmdgcfjbbpaeojofohoefgiehjai",
-            length: 1,
-            name: "Chrome PDF Viewer"
-          },
-          {
-            0: {type: "application/x-nacl", suffixes: "", description: "Native Client Executable"},
-            1: {type: "application/x-pnacl", suffixes: "", description: "Portable Native Client Executable"},
-            description: "",
-            filename: "internal-nacl-plugin",
-            length: 2,
-            name: "Native Client"
-          }
-        ];
-      },
+      get: () => [1, 2, 3],
       configurable: true
     });
 
-    // Languages
     Object.defineProperty(navigator, 'languages', {
       get: () => ['en-US', 'en'],
       configurable: true
     });
 
-    // Platform
     Object.defineProperty(navigator, 'platform', {
       get: () => 'Win32',
       configurable: true
     });
 
-    // Hardware
     Object.defineProperty(navigator, 'hardwareConcurrency', {
       get: () => 8,
       configurable: true
     });
 
-    Object.defineProperty(navigator, 'deviceMemory', {
-      get: () => 8,
-      configurable: true
-    });
-
-    // Vendor
-    Object.defineProperty(navigator, 'vendor', {
-      get: () => 'Google Inc.',
-      configurable: true
-    });
-
-    // MaxTouchPoints
-    Object.defineProperty(navigator, 'maxTouchPoints', {
-      get: () => 0,
-      configurable: true
-    });
-
-    // Connection
-    Object.defineProperty(navigator, 'connection', {
-      get: () => ({
-        effectiveType: '4g',
-        rtt: 50,
-        downlink: 10,
-        saveData: false
-      }),
-      configurable: true
-    });
-
-    // Battery (存在しないことにする)
-    if (navigator.getBattery) {
-      navigator.getBattery = () => Promise.reject(new Error('Battery API not available'));
-    }
-
-    // Google無効化
     Object.defineProperty(window, 'google', {
       get() { return undefined; },
       set() { return false; },
@@ -1049,7 +842,6 @@ async function initXLoginPage() {
       configurable: false
     });
 
-    // エラー抑制
     const originalError = console.error;
     const originalWarn = console.warn;
     
@@ -1078,59 +870,6 @@ async function initXLoginPage() {
   console.log('✅ X login page initialized with ultra-stealth mode');
   return page;
 }
-
-app.post('/api/x-login', async (req, res) => {
-  const { username, password } = req.body;
-
-  if (!username || !password) {
-    return res.status(400).json({ 
-      success: false,
-      error: 'Username and password required' 
-    });
-  }
-
-  try {
-    console.log(`[API] Login request for: ${username}`);
-
-    if (!xLoginPage) {
-      xLoginPage = await initXLoginPage();
-    }
-
-    const result = await loginToX(xLoginPage, username, password);
-
-    if (result.success) {
-      return res.json({
-        success: true,
-        message: 'Login successful',
-        authToken: result.authToken,
-        ct0Token: result.ct0Token,
-        currentUrl: result.currentUrl,
-        cookies: result.cookies.map(c => ({
-          name: c.name,
-          domain: c.domain
-        })),
-        logs: result.logs
-      });
-    } else {
-      return res.status(401).json({
-        success: false,
-        message: result.message || 'Login failed',
-        error: result.error,
-        currentUrl: result.currentUrl,
-        needsVerification: result.needsVerification,
-        logs: result.logs
-      });
-    }
-
-  } catch (error) {
-    console.error('[API] Login error:', error.message);
-    return res.status(500).json({
-      success: false,
-      error: 'Login request failed',
-      message: error.message
-    });
-  }
-});
 
 /**
  * GET /api/x-cookies - Cookie確認
