@@ -284,10 +284,12 @@ html = html.replace(/<head[^>]*>/i, (match) => match + interceptScript);
   return html;
 }
 
-// server.js の修正部分（app.get('/proxy/:encodedUrl*', ...) 内）
+// server.js の app.get('/proxy/:encodedUrl*') を完全に置き換え
 
 app.get('/proxy/:encodedUrl*', async (req, res) => {
   let page;
+  let shouldClosePage = false; // ページを閉じるべきかのフラグ
+  
   try {
     const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
     const targetUrl = decodeProxyUrl(encodedUrl);
@@ -305,8 +307,11 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
                              parsedUrl.pathname.includes('/i/api/') ||
                              parsedUrl.pathname.includes('/2/') ||
                              parsedUrl.hostname.startsWith('api.') ||
-                             parsedUrl.hostname.includes('google');
+                             parsedUrl.hostname.includes('google') ||
+                             parsedUrl.pathname === '/manifest.json' ||
+                             parsedUrl.pathname.endsWith('.json');
 
+    // ========== 静的リソース・API: axiosで直接取得 ==========
     if (shouldDirectFetch) {
       const headers = {
         'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -319,17 +324,15 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
       headers['Referer'] = `${refererUrl.protocol}//${refererUrl.host}/`;
       headers['Origin'] = `${refererUrl.protocol}//${refererUrl.host}`;
 
-      if (req.headers.cookie) {
-        headers['Cookie'] = req.headers.cookie;
-      }
-      
-      // キャッシュされたCookieを使用
+      // キャッシュされたCookieを優先使用
       if (cachedXCookies && (parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com'))) {
         let cookieString = cachedXCookies
           .map(c => `${c.name}=${c.value}`)
           .join('; ');
         headers['Cookie'] = cookieString;
-        console.log('🍪 Using cached cookies for API request');
+        console.log('🍪 Using cached cookies');
+      } else if (req.headers.cookie) {
+        headers['Cookie'] = req.headers.cookie;
       }
 
       if (req.headers.authorization) {
@@ -373,34 +376,33 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
       return res.send(response.data);
     }
 
-    // HTMLページはPuppeteerで取得
+    // ========== HTMLページ: Puppeteerで取得 ==========
     const browserInstance = await initBrowser();
+    const isXDomain = parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com');
 
-    // xLoginPageを再利用（Cookieが設定済み）
-    if (xLoginPage && cachedXCookies) {
-      console.log('🔄 Reusing xLoginPage with cached cookies');
+    // ⚠️ 重要: X関連ページでCookieがあれば、xLoginPageを再利用
+    if (isXDomain && xLoginPage && cachedXCookies) {
+      console.log('♻️  Reusing xLoginPage (cached cookies available)');
       page = xLoginPage;
+      shouldClosePage = false; // xLoginPageは閉じない
     } else {
       console.log('📍 Creating new page');
       page = await browserInstance.newPage();
+      shouldClosePage = true; // 新規ページは後で閉じる
       
       await page.setViewport({ width: 1920, height: 1080 });
       await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
 
-      // ⚠️ 重要: リクエストインターセプションは1回だけ設定
+      // リクエストインターセプション設定
       await page.setRequestInterception(true);
-      
-      // ⚠️ 修正: リクエストハンドラーの重複を防ぐ
-      page.removeAllListeners('request'); // 既存のリスナーをクリア
+      page.removeAllListeners('request');
       
       page.on('request', (request) => {
-        const requestUrl = request.url();
-        
-        // 既に処理済みの場合はスキップ
         if (request.isInterceptResolutionHandled()) {
           return;
         }
         
+        const requestUrl = request.url();
         const isGoogleResource = (
           requestUrl.includes('google.com') ||
           requestUrl.includes('gstatic.com') ||
@@ -418,82 +420,89 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
       });
 
       // Cookieを事前にセット
-      if (cachedXCookies && (parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com'))) {
+      if (cachedXCookies && isXDomain) {
         try {
           await page.setCookie(...cachedXCookies);
-          console.log('🍪 Set cached cookies before navigation');
+          console.log('🍪 Set cached cookies to new page');
         } catch (e) {
           console.log('⚠️ Could not set cookies:', e.message);
         }
       }
+
+      // ステルスモード設定
+      await page.evaluateOnNewDocument(() => {
+        delete Object.getPrototypeOf(navigator).webdriver;
+        
+        Object.defineProperty(navigator, 'webdriver', {
+          get: () => undefined,
+          configurable: false
+        });
+
+        window.chrome = {
+          runtime: {},
+          loadTimes: function() {},
+          csi: function() {},
+          app: {}
+        };
+
+        Object.defineProperty(window, 'google', {
+          get() { return undefined; },
+          set() { return false; },
+          configurable: false
+        });
+
+        Object.defineProperty(window, 'gapi', {
+          get() { return undefined; },
+          set() { return false; },
+          configurable: false
+        });
+
+        const originalError = console.error;
+        const originalWarn = console.warn;
+        
+        console.error = function(...args) {
+          const msg = args.join(' ');
+          if (msg.includes('GSI') || msg.includes('google') || msg.includes('client ID')) {
+            return;
+          }
+          return originalError.apply(console, args);
+        };
+
+        console.warn = function(...args) {
+          const msg = args.join(' ');
+          if (msg.includes('GSI') || msg.includes('google') || msg.includes('FedCM')) {
+            return;
+          }
+          return originalWarn.apply(console, args);
+        };
+
+        window.addEventListener('unhandledrejection', (event) => {
+          const msg = String(event.reason);
+          if (msg.includes('google') || msg.includes('GSI')) {
+            event.preventDefault();
+          }
+        });
+      });
     }
 
-    // ステルスモード設定
-    await page.evaluateOnNewDocument(() => {
-      delete Object.getPrototypeOf(navigator).webdriver;
-      
-      Object.defineProperty(navigator, 'webdriver', {
-        get: () => undefined,
-        configurable: false
-      });
-
-      window.chrome = {
-        runtime: {},
-        loadTimes: function() {},
-        csi: function() {},
-        app: {}
-      };
-
-      Object.defineProperty(window, 'google', {
-        get() { return undefined; },
-        set() { return false; },
-        configurable: false
-      });
-
-      Object.defineProperty(window, 'gapi', {
-        get() { return undefined; },
-        set() { return false; },
-        configurable: false
-      });
-
-      const originalError = console.error;
-      const originalWarn = console.warn;
-      
-      console.error = function(...args) {
-        const msg = args.join(' ');
-        if (msg.includes('GSI') || msg.includes('google') || msg.includes('client ID')) {
-          return;
-        }
-        return originalError.apply(console, args);
-      };
-
-      console.warn = function(...args) {
-        const msg = args.join(' ');
-        if (msg.includes('GSI') || msg.includes('google') || msg.includes('FedCM')) {
-          return;
-        }
-        return originalWarn.apply(console, args);
-      };
-
-      window.addEventListener('unhandledrejection', (event) => {
-        const msg = String(event.reason);
-        if (msg.includes('google') || msg.includes('GSI')) {
-          event.preventDefault();
-        }
-      });
-    });
-
-    // ⚠️ 修正: タイムアウトを短縮 & リトライを防ぐ
+    // ========== ページナビゲーション ==========
     console.log('🌐 Navigating to:', targetUrl);
-    await page.goto(targetUrl, {
-      waitUntil: 'domcontentloaded', // networkidle2 → domcontentloaded に変更
-      timeout: 15000 // 20秒 → 15秒に短縮
-    }).catch((e) => {
-      console.log('⚠️ Navigation timeout (non-critical):', e.message);
-    });
+    
+    try {
+      await page.goto(targetUrl, {
+        waitUntil: 'domcontentloaded',
+        timeout: 20000
+      });
+      console.log('✅ Navigation completed');
+    } catch (navError) {
+      console.log('⚠️ Navigation timeout (continuing anyway):', navError.message);
+      // タイムアウトでも続行（部分的にロードされている可能性）
+    }
 
-    await new Promise(resolve => setTimeout(resolve, 2000)); // 1.5秒 → 2秒
+    // 追加の待機時間
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
+    // ========== HTMLコンテンツ取得 ==========
     let htmlContent = await page.content();
     
     // Google要素削除
@@ -504,6 +513,7 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
     htmlContent = htmlContent.replace(/google\.accounts\.id\.[^;]+;?/gi, '');
     htmlContent = htmlContent.replace(/google\.accounts\.id\.prompt\([^)]*\);?/gi, '');
     
+    // Cookieを取得してレスポンスに設定
     const cookies = await page.cookies();
     if (cookies.length > 0) {
       const setCookieHeaders = cookies.map(cookie => {
@@ -512,18 +522,21 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
       res.setHeader('Set-Cookie', setCookieHeaders);
     }
 
+    // HTML書き換え
     htmlContent = rewriteHTML(htmlContent, targetUrl);
     
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(htmlContent);
 
-    // xLoginPageは閉じない
-    if (page !== xLoginPage) {
+    // ページクローズ処理
+    if (shouldClosePage) {
       await page.close().catch(() => {});
+      console.log('🗑️  Closed temporary page');
     }
 
   } catch (error) {
-    if (page && page !== xLoginPage) {
+    // エラー時のクリーンアップ
+    if (page && shouldClosePage) {
       try {
         await page.close().catch(() => {});
       } catch (e) {}
@@ -1034,9 +1047,8 @@ app.get('/api/x-test', async (req, res) => {
   }
 });
 
-/**
- * POST /api/x-inject-cookies - Cookie注入（永続化対応）
- */
+// server.js の POST /api/x-inject-cookies を置き換え
+
 app.post('/api/x-inject-cookies', async (req, res) => {
   const { authToken, ct0Token } = req.body;
 
@@ -1072,52 +1084,72 @@ app.post('/api/x-inject-cookies', async (req, res) => {
       }
     ];
 
+    // ⚠️ 重要: グローバルキャッシュに保存
     cachedXCookies = cookies;
     console.log('[API] ✅ Cookies cached globally');
 
+    // ⚠️ 重要: xLoginPageを初期化してCookieをセット
     if (!xLoginPage) {
+      console.log('[API] Creating xLoginPage...');
       xLoginPage = await initXLoginPage();
     }
 
-    await xLoginPage.goto('https://x.com/', {
-      waitUntil: 'domcontentloaded',
-      timeout: 60000
-    });
+    // xLoginPageにCookieをセット
+    try {
+      await xLoginPage.setCookie(...cookies);
+      console.log('[API] ✅ Cookies set in xLoginPage');
+    } catch (e) {
+      console.log('[API] ⚠️ Could not set cookies in page:', e.message);
+    }
 
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    // X.comに移動してCookieを有効化
+    try {
+      console.log('[API] Navigating to X.com to activate cookies...');
+      await xLoginPage.goto('https://x.com/', {
+        waitUntil: 'domcontentloaded',
+        timeout: 15000
+      });
+      
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      const currentUrl = xLoginPage.url();
+      const allCookies = await xLoginPage.cookies();
+      const hasAuthToken = allCookies.some(c => c.name === 'auth_token');
 
-    await xLoginPage.setCookie(...cookies);
-    console.log('[API] ✅ Cookies set in Puppeteer page');
+      console.log('[API] Current URL:', currentUrl);
+      console.log('[API] Has auth_token:', hasAuthToken);
+      console.log('[API] Total cookies:', allCookies.length);
 
-    await xLoginPage.reload({
-      waitUntil: 'domcontentloaded',
-      timeout: 60000
-    });
+      return res.json({
+        success: true,
+        message: 'Cookies injected and cached successfully',
+        isLoggedIn: hasAuthToken,
+        currentUrl,
+        cached: true,
+        cookies: allCookies.map(c => ({
+          name: c.name,
+          domain: c.domain
+        })),
+        note: 'xLoginPage is ready for reuse'
+      });
 
-    await new Promise(resolve => setTimeout(resolve, 3000));
-
-    const currentUrl = xLoginPage.url();
-    const allCookies = await xLoginPage.cookies();
-    const hasAuthToken = allCookies.some(c => c.name === 'auth_token');
-
-    console.log('[API] Current URL:', currentUrl);
-    console.log('[API] Has auth_token:', hasAuthToken);
-
-    return res.json({
-      success: true,
-      message: 'Cookies cached. Will persist across all requests.',
-      isLoggedIn: hasAuthToken,
-      currentUrl,
-      cached: true,
-      cookies: allCookies.map(c => ({
-        name: c.name,
-        domain: c.domain
-      }))
-    });
+    } catch (navError) {
+      console.log('[API] ⚠️ Navigation failed (cookies still cached):', navError.message);
+      
+      // ナビゲーション失敗でもCookieはキャッシュ済み
+      return res.json({
+        success: true,
+        message: 'Cookies cached (navigation skipped)',
+        warning: navError.message,
+        cached: true,
+        note: 'Cookies will be used in proxy requests'
+      });
+    }
 
   } catch (error) {
     console.error('[API] Cookie injection error:', error.message);
     
+    // キャッシュされていればOK
     if (cachedXCookies) {
       return res.json({
         success: true,
