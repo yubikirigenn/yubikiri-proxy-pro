@@ -327,23 +327,32 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
     headers['Cookie'] = req.headers.cookie;
   }
   
-  // xLoginPageからCookieを取得して追加（ログイン状態を維持）
-  if (xLoginPage && parsedUrl.hostname.includes('x.com')) {
+  // キャッシュされたCookieを使用（ログイン状態を維持）
+if (parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com')) {
+  let cookieString = '';
+  
+  if (cachedXCookies) {
+    cookieString = cachedXCookies
+      .map(c => `${c.name}=${c.value}`)
+      .join('; ');
+    console.log('📍 Using cached cookies');
+  } else if (xLoginPage) {
     try {
       const pageCookies = await xLoginPage.cookies();
-      const cookieString = pageCookies
+      cookieString = pageCookies
         .filter(c => c.domain.includes('x.com') || c.domain.includes('twitter.com'))
         .map(c => `${c.name}=${c.value}`)
         .join('; ');
-      
-      if (cookieString) {
-        headers['Cookie'] = cookieString;
-        console.log('📍 Using logged-in cookies for X API request');
-      }
+      console.log('📍 Using xLoginPage cookies');
     } catch (e) {
-      console.log('⚠️ Could not get cookies from xLoginPage:', e.message);
+      console.log('⚠️ Could not get cookies:', e.message);
     }
   }
+  
+  if (cookieString) {
+    headers['Cookie'] = cookieString;
+  }
+}
 
   if (req.headers.authorization) {
     headers['Authorization'] = req.headers.authorization;
@@ -645,6 +654,8 @@ app.get('/health', (req, res) => {
 const { loginToX } = require('./x-login');
 
 let xLoginPage = null;
+let cachedXCookies = null;
+
 // ===== 以下を const { loginToX } = require('./x-login'); の直後に追加 =====
 
 /**
@@ -1060,26 +1071,43 @@ app.post('/api/x-login', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/x-cookies - Cookie確認
+ */
 app.get('/api/x-cookies', async (req, res) => {
   try {
-    if (!xLoginPage) {
+    const hasCachedCookies = !!cachedXCookies;
+    
+    if (!hasCachedCookies && !xLoginPage) {
       return res.status(400).json({ 
         success: false,
-        error: 'No active session. Please login first.' 
+        error: 'No cookies cached. Please inject cookies first.',
+        cached: false
       });
     }
 
-    const cookies = await xLoginPage.cookies();
-    const authToken = cookies.find(c => c.name === 'auth_token');
+    let cookies = [];
+    let authToken = null;
+
+    if (cachedXCookies) {
+      cookies = cachedXCookies;
+      authToken = cookies.find(c => c.name === 'auth_token');
+    } else if (xLoginPage) {
+      cookies = await xLoginPage.cookies();
+      authToken = cookies.find(c => c.name === 'auth_token');
+    }
 
     return res.json({
       success: true,
       isLoggedIn: !!authToken,
+      cached: hasCachedCookies,
       cookies: cookies.map(c => ({
         name: c.name,
-        domain: c.domain
+        domain: c.domain,
+        expires: c.expires ? new Date(c.expires * 1000).toISOString() : 'session'
       })),
-      currentUrl: xLoginPage.url()
+      currentUrl: xLoginPage ? xLoginPage.url() : 'N/A',
+      message: hasCachedCookies ? 'Cookies are cached and persistent' : 'Cookies from session only'
     });
 
   } catch (error) {
@@ -1151,6 +1179,35 @@ app.get('/api/x-cookies', async (req, res) => {
 });
 
 /**
+ * DELETE /api/x-cookies - Cookieキャッシュ削除
+ */
+app.delete('/api/x-cookies', async (req, res) => {
+  try {
+    cachedXCookies = null;
+    console.log('[API] Cookie cache cleared');
+
+    if (xLoginPage) {
+      const cookies = await xLoginPage.cookies();
+      for (const cookie of cookies) {
+        await xLoginPage.deleteCookie(cookie);
+      }
+      console.log('[API] xLoginPage cookies cleared');
+    }
+
+    return res.json({
+      success: true,
+      message: 'All X cookies cleared'
+    });
+
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
  * GET /api/x-test - Xページアクセステスト
  */
 app.get('/api/x-test', async (req, res) => {
@@ -1178,7 +1235,7 @@ app.get('/api/x-test', async (req, res) => {
 });
 
 /**
- * POST /api/x-inject-cookies - Cookie注入
+ * POST /api/x-inject-cookies - Cookie注入（永続化対応）
  */
 app.post('/api/x-inject-cookies', async (req, res) => {
   const { authToken, ct0Token } = req.body;
@@ -1193,22 +1250,7 @@ app.post('/api/x-inject-cookies', async (req, res) => {
   try {
     console.log('[API] Injecting X cookies...');
 
-    if (!xLoginPage) {
-      xLoginPage = await initXLoginPage();
-    }
-
-    // まずトップページにアクセス
-    console.log('[API] Navigating to X top page...');
-    await xLoginPage.goto('https://x.com/', {
-      waitUntil: 'domcontentloaded',
-      timeout: 60000
-    });
-
-    console.log('[API] Page loaded, setting cookies...');
-    await new Promise(resolve => setTimeout(resolve, 2000));
-
-    // Cookieを設定
-    await xLoginPage.setCookie(
+    const cookies = [
       {
         name: 'auth_token',
         value: authToken,
@@ -1216,7 +1258,8 @@ app.post('/api/x-inject-cookies', async (req, res) => {
         path: '/',
         httpOnly: true,
         secure: true,
-        sameSite: 'None'
+        sameSite: 'None',
+        expires: Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60)
       },
       {
         name: 'ct0',
@@ -1224,14 +1267,28 @@ app.post('/api/x-inject-cookies', async (req, res) => {
         domain: '.x.com',
         path: '/',
         secure: true,
-        sameSite: 'Lax'
+        sameSite: 'Lax',
+        expires: Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60)
       }
-    );
+    ];
 
-    console.log('[API] Cookies set successfully!');
+    cachedXCookies = cookies;
+    console.log('[API] ✅ Cookies cached globally');
 
-    // ページをリロードしてCookieを適用
-    console.log('[API] Reloading page to apply cookies...');
+    if (!xLoginPage) {
+      xLoginPage = await initXLoginPage();
+    }
+
+    await xLoginPage.goto('https://x.com/', {
+      waitUntil: 'domcontentloaded',
+      timeout: 60000
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    await xLoginPage.setCookie(...cookies);
+    console.log('[API] ✅ Cookies set in Puppeteer page');
+
     await xLoginPage.reload({
       waitUntil: 'domcontentloaded',
       timeout: 60000
@@ -1240,82 +1297,34 @@ app.post('/api/x-inject-cookies', async (req, res) => {
     await new Promise(resolve => setTimeout(resolve, 3000));
 
     const currentUrl = xLoginPage.url();
-    
-    // Cookieが設定されているか確認
     const allCookies = await xLoginPage.cookies();
     const hasAuthToken = allCookies.some(c => c.name === 'auth_token');
-    const hasCt0 = allCookies.some(c => c.name === 'ct0');
 
     console.log('[API] Current URL:', currentUrl);
     console.log('[API] Has auth_token:', hasAuthToken);
-    console.log('[API] Has ct0:', hasCt0);
 
-    // ページの内容を確認
-    const pageContent = await xLoginPage.evaluate(() => {
-      return {
-        bodyText: document.body.innerText.substring(0, 500),
-        hasLoginButton: document.body.innerText.includes('Log in'),
-        hasError: document.body.innerText.includes('Error')
-      };
+    return res.json({
+      success: true,
+      message: 'Cookies cached. Will persist across all requests.',
+      isLoggedIn: hasAuthToken,
+      currentUrl,
+      cached: true,
+      cookies: allCookies.map(c => ({
+        name: c.name,
+        domain: c.domain
+      }))
     });
-
-    console.log('[API] Page content check:', pageContent);
-
-    if (hasAuthToken && hasCt0 && !pageContent.hasLoginButton) {
-      console.log('[API] ✅ Cookie injection successful!');
-      
-      return res.json({
-        success: true,
-        message: 'Cookies injected successfully',
-        isLoggedIn: true,
-        currentUrl,
-        cookies: allCookies.map(c => ({
-          name: c.name,
-          domain: c.domain
-        })),
-        pageContent
-      });
-    } else {
-      console.log('[API] ⚠️ Cookies set but login status unclear');
-      
-      return res.json({
-        success: true,
-        message: 'Cookies set (login status uncertain - try accessing X through proxy)',
-        isLoggedIn: false,
-        currentUrl,
-        cookies: allCookies.map(c => ({
-          name: c.name,
-          domain: c.domain
-        })),
-        pageContent,
-        note: 'Cookies are set. Try accessing X pages through the proxy to verify.'
-      });
-    }
 
   } catch (error) {
     console.error('[API] Cookie injection error:', error.message);
     
-    // エラーでもCookieが設定されている可能性がある
-    try {
-      const cookies = await xLoginPage.cookies();
-      const hasAuthToken = cookies.some(c => c.name === 'auth_token');
-      
-      if (hasAuthToken) {
-        console.log('[API] ⚠️ Error occurred but cookies were set');
-        
-        return res.json({
-          success: true,
-          message: 'Cookies may have been set despite error',
-          warning: error.message,
-          cookies: cookies.map(c => ({
-            name: c.name,
-            domain: c.domain
-          })),
-          note: 'Try accessing X through the proxy to verify if cookies work.'
-        });
-      }
-    } catch (e) {
-      // Cookie取得も失敗
+    if (cachedXCookies) {
+      return res.json({
+        success: true,
+        message: 'Cookies cached (verification skipped)',
+        warning: error.message,
+        cached: true
+      });
     }
 
     return res.status(500).json({
