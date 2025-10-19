@@ -400,8 +400,46 @@ res.setHeader('Access-Control-Allow-Credentials', 'true');
 return res.send(response.data);
 }
 
-    const browserInstance = await initBrowser();
-    page = await browserInstance.newPage();
+    // HTMLページはPuppeteerで取得
+const browserInstance = await initBrowser();
+
+// xLoginPageを再利用（Cookieが設定済み）
+if (xLoginPage && cachedXCookies) {
+  console.log('📍 Reusing xLoginPage with cached cookies');
+  page = xLoginPage;
+} else {
+  console.log('📍 Creating new page');
+  page = await browserInstance.newPage();
+  
+  await page.setViewport({ width: 1920, height: 1080 });
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
+
+  // Googleブロック
+  await page.setRequestInterception(true);
+  page.on('request', (request) => {
+    const requestUrl = request.url();
+    
+    const isGoogleResource = (
+      requestUrl.includes('google.com') ||
+      requestUrl.includes('gstatic.com') ||
+      requestUrl.includes('googleapis.com') ||
+      requestUrl.includes('doubleclick.net')
+    );
+    
+    if (isGoogleResource) {
+      request.abort();
+      return;
+    }
+    
+    request.continue();
+  });
+
+  // Cookieを設定
+  if (cachedXCookies && (parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com'))) {
+    await page.setCookie(...cachedXCookies);
+    console.log('📍 Set cached cookies to new page');
+  }
+}
 
     await page.setViewport({ width: 1920, height: 1080 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
@@ -558,7 +596,10 @@ await page.goto(targetUrl, {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(htmlContent);
 
-    await page.close().catch(() => {});
+    // xLoginPageは閉じない
+if (page !== xLoginPage) {
+  await page.close().catch(() => {});
+}
 
   } catch (error) {
     if (page) {
