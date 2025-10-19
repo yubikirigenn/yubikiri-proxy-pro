@@ -191,6 +191,11 @@ function rewriteHTML(html, baseUrl) {
   </script>
 `;
 
+// CSP緩和
+const cspMeta = `<meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:;">`;
+
+html = html.replace(/<head[^>]*>/i, (match) => match + cspMeta + interceptScript);
+
   html = html.replace(/<head[^>]*>/i, (match) => match + interceptScript);
   
   html = html.replace(/<script[^>]*src=[^>]*google[^>]*>[\s\S]*?<\/script>/gi, '');
@@ -200,8 +205,8 @@ function rewriteHTML(html, baseUrl) {
   html = html.replace(/google\.accounts\.id\.[^;]+;?/gi, '');
 
   if (!html.includes('<base')) {
-    html = html.replace(/<head[^>]*>/i, `<head><base href="/proxy/${encodeProxyUrl(baseUrl)}">`);
-  }
+   html = html.replace(/<head[^>]*>/i, `<head><base href="/proxy/${encodeProxyUrl(baseUrl)}">`);
+ }
 
   if (!html.includes('charset')) {
     html = html.replace(/<head[^>]*>/i, '<head><meta charset="UTF-8">');
@@ -318,8 +323,13 @@ if (parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  
-  return res.send(response.data);
+  // CORS対応（約340行目付近）
+res.setHeader('Access-Control-Allow-Origin', '*');
+res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+res.setHeader('Access-Control-Allow-Headers', '*');
+res.setHeader('Access-Control-Allow-Credentials', 'true');
+
+return res.send(response.data);
 }
 
     const browserInstance = await initBrowser();
@@ -436,6 +446,20 @@ if (parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter
         });
       }
     });
+// Cookieを事前にセット
+if (cachedXCookies && (parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com'))) {
+  try {
+    await page.setCookie(...cachedXCookies);
+    console.log('📍 Set cached cookies before navigation');
+  } catch (e) {
+    console.log('⚠️ Could not set cookies:', e.message);
+  }
+}
+
+await page.goto(targetUrl, {
+  waitUntil: 'networkidle2',
+  timeout: 20000
+}).catch(() => {});
 
     await page.goto(targetUrl, {
       waitUntil: 'networkidle2',
@@ -549,8 +573,9 @@ app.post('/proxy/:encodedUrl*', async (req, res) => {
 
 app.options('/proxy/:encodedUrl*', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cookie');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', '*');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Max-Age', '86400');
   res.status(204).send();
 });
