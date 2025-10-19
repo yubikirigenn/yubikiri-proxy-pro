@@ -144,8 +144,8 @@ function rewriteHTML(html, baseUrl) {
   <script>
     (function() {
       const proxyBase = '${origin}';
-      const currentProxyUrl = window.location.pathname.match(/\\/proxy\\/([^\\/]+)/)?.[1];
       
+      // Google無効化
       Object.defineProperty(window, 'google', {
         get: () => undefined,
         set: () => false,
@@ -158,6 +158,7 @@ function rewriteHTML(html, baseUrl) {
         configurable: false
       });
       
+      // script要素作成監視（Google用）
       const originalCreateElement = document.createElement;
       document.createElement = function(tagName) {
         const element = originalCreateElement.call(document, tagName);
@@ -173,81 +174,7 @@ function rewriteHTML(html, baseUrl) {
         return element;
       };
       
-      function toAbsoluteUrl(relativeUrl) {
-        if (relativeUrl.startsWith('http://') || relativeUrl.startsWith('https://')) {
-          return relativeUrl;
-        }
-        if (relativeUrl.startsWith('//')) {
-          return '${urlObj.protocol}' + relativeUrl;
-        }
-        if (relativeUrl.startsWith('/')) {
-          return proxyBase + relativeUrl;
-        }
-        return '${baseUrl}' + (relativeUrl.startsWith('/') ? '' : '/') + relativeUrl;
-      }
-      
-      function encodeProxyUrl(url) {
-        return '/proxy/' + btoa(url).replace(/\\+/g, '-').replace(/\\/g, '_').replace(/=/g, '');
-      }
-      
-      // fetch を完全にオーバーライド
-      const originalFetch = window.fetch;
-      window.fetch = function(resource, options) {
-        let url = typeof resource === 'string' ? resource : resource.url;
-        
-        // Google関連はブロック
-        if (url.includes('google') || url.includes('gstatic')) {
-          console.log('[Proxy] Blocked Google fetch:', url);
-          return Promise.reject(new Error('Blocked'));
-        }
-        
-        // blob/data URLはそのまま
-        if (url.startsWith('blob:') || url.startsWith('data:')) {
-          return originalFetch.call(this, resource, options);
-        }
-        
-        // 相対URLまたは絶対URLを処理
-        const absoluteUrl = toAbsoluteUrl(url);
-        
-        // 外部URLの場合のみプロキシ経由
-        if (absoluteUrl.startsWith('http')) {
-          const proxyUrl = encodeProxyUrl(absoluteUrl);
-          console.log('[Proxy] Fetch redirect:', url, '->', proxyUrl);
-          
-          if (typeof resource === 'string') {
-            return originalFetch.call(this, proxyUrl, options);
-          } else {
-            resource = new Request(proxyUrl, resource);
-            return originalFetch.call(this, resource, options);
-          }
-        }
-        
-        return originalFetch.call(this, resource, options);
-      };
-
-      // XMLHttpRequest を完全にオーバーライド
-      const originalOpen = XMLHttpRequest.prototype.open;
-      XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-        // Google関連はブロック
-        if (typeof url === 'string' && (url.includes('google') || url.includes('gstatic'))) {
-          console.log('[Proxy] Blocked Google XHR:', url);
-          throw new Error('Blocked');
-        }
-        
-        if (typeof url === 'string' && !url.startsWith('blob:') && !url.startsWith('data:')) {
-          const absoluteUrl = toAbsoluteUrl(url);
-          
-          if (absoluteUrl.startsWith('http')) {
-            const proxyUrl = encodeProxyUrl(absoluteUrl);
-            console.log('[Proxy] XHR redirect:', url, '->', proxyUrl);
-            return originalOpen.call(this, method, proxyUrl, ...rest);
-          }
-        }
-        
-        return originalOpen.call(this, method, url, ...rest);
-      };
-
-      // エラー抑制
+      // エラー抑制のみ（fetchやXHRは書き換えない）
       const originalError = console.error;
       console.error = function(...args) {
         const msg = args.join(' ');
@@ -259,7 +186,7 @@ function rewriteHTML(html, baseUrl) {
 
       console.warn = () => {};
       
-      console.log('[Proxy] Intercept script loaded');
+      console.log('[Proxy] Basic intercept loaded');
     })();
   </script>
 `;
