@@ -83,7 +83,9 @@ function decodeProxyUrl(encoded) {
 function rewriteHTML(html, baseUrl) {
   const urlObj = new url.URL(baseUrl);
   const origin = `${urlObj.protocol}//${urlObj.host}`;
+  const proxyOrigin = process.env.RENDER ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : `http://localhost:${PORT}`;
 
+  // hrefを書き換え
   html = html.replace(/href\s*=\s*["']([^"']+)["']/gi, (match, href) => {
     if (href.startsWith('javascript:') || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:')) {
       return match;
@@ -104,6 +106,7 @@ function rewriteHTML(html, baseUrl) {
     }
   });
 
+  // srcを書き換え
   html = html.replace(/src\s*=\s*["']([^"']+)["']/gi, (match, src) => {
     if (src.startsWith('data:') || src.startsWith('blob:')) {
       return match;
@@ -124,6 +127,7 @@ function rewriteHTML(html, baseUrl) {
     }
   });
 
+  // actionを書き換え
   html = html.replace(/action\s*=\s*["']([^"']+)["']/gi, (match, action) => {
     let absoluteUrl = action;
     try {
@@ -140,73 +144,138 @@ function rewriteHTML(html, baseUrl) {
     }
   });
 
+  // インターセプトスクリプト
   const interceptScript = `
-  <script>
-    (function() {
-      const proxyBase = '${origin}';
-      
-      // Google無効化
-      Object.defineProperty(window, 'google', {
-        get: () => undefined,
-        set: () => false,
-        configurable: false
-      });
-      
-      Object.defineProperty(window, 'gapi', {
-        get: () => undefined,
-        set: () => false,
-        configurable: false
-      });
-      
-      // script要素作成監視（Google用）
-      const originalCreateElement = document.createElement;
-      document.createElement = function(tagName) {
-        const element = originalCreateElement.call(document, tagName);
-        if (tagName.toLowerCase() === 'script') {
-          const originalSetAttribute = element.setAttribute.bind(element);
-          element.setAttribute = function(name, value) {
-            if (name === 'src' && (value.includes('google') || value.includes('gstatic'))) {
-              return;
+    <script>
+      (function() {
+        const PROXY_ORIGIN = '${proxyOrigin}';
+        const TARGET_ORIGIN = '${origin}';
+        
+        console.log('[Proxy] Initializing for', TARGET_ORIGIN);
+        
+        // Google無効化
+        Object.defineProperty(window, 'google', {
+          get: () => undefined,
+          set: () => false,
+          configurable: false
+        });
+        
+        Object.defineProperty(window, 'gapi', {
+          get: () => undefined,
+          set: () => false,
+          configurable: false
+        });
+        
+        function toAbsoluteUrl(relativeUrl) {
+          if (relativeUrl.startsWith('http://') || relativeUrl.startsWith('https://')) {
+            return relativeUrl;
+          }
+          if (relativeUrl.startsWith('//')) {
+            return 'https:' + relativeUrl;
+          }
+          if (relativeUrl.startsWith('/')) {
+            return TARGET_ORIGIN + relativeUrl;
+          }
+          return TARGET_ORIGIN + '/' + relativeUrl;
+        }
+        
+        function encodeProxyUrl(url) {
+          const base64 = btoa(url).replace(/\\+/g, '-').replace(/\\\//g, '_').replace(/=/g, '');
+          return PROXY_ORIGIN + '/proxy/' + base64;
+        }
+        
+        // fetch インターセプト
+        const originalFetch = window.fetch;
+        window.fetch = function(resource, options) {
+          let url = typeof resource === 'string' ? resource : (resource.url || resource);
+          
+          // Google関連はブロック
+          if (url.includes('google.com') || url.includes('gstatic.com')) {
+            console.log('[Proxy] Blocked:', url);
+            return Promise.reject(new Error('Blocked'));
+          }
+          
+          // blob/dataはそのまま
+          if (url.startsWith('blob:') || url.startsWith('data:')) {
+            return originalFetch.call(this, resource, options);
+          }
+          
+          // プロキシ経由のURLはそのまま
+          if (url.startsWith(PROXY_ORIGIN + '/proxy/')) {
+            return originalFetch.call(this, resource, options);
+          }
+          
+          const absoluteUrl = toAbsoluteUrl(url);
+          
+          // 外部URLの場合
+          if (absoluteUrl.startsWith('http')) {
+            const proxyUrl = encodeProxyUrl(absoluteUrl);
+            console.log('[Proxy] Fetch:', url, '->', proxyUrl);
+            
+            // オプションを調整
+            const newOptions = Object.assign({}, options);
+            if (newOptions.mode === 'cors') {
+              delete newOptions.mode;
             }
-            return originalSetAttribute(name, value);
-          };
-        }
-        return element;
-      };
-      
-      // エラー抑制のみ（fetchやXHRは書き換えない）
-      const originalError = console.error;
-      console.error = function(...args) {
-        const msg = args.join(' ');
-        if (msg.includes('GSI') || msg.includes('google')) {
-          return;
-        }
-        return originalError.apply(console, args);
-      };
+            
+            if (typeof resource === 'string') {
+              return originalFetch.call(this, proxyUrl, newOptions);
+            } else {
+              return originalFetch.call(this, new Request(proxyUrl, newOptions));
+            }
+          }
+          
+          return originalFetch.call(this, resource, options);
+        };
 
-      console.warn = () => {};
-      
-      console.log('[Proxy] Basic intercept loaded');
-    })();
-  </script>
-`;
+        // XMLHttpRequest インターセプト
+        const originalOpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+          if (typeof url === 'string') {
+            // Google関連はブロック
+            if (url.includes('google.com') || url.includes('gstatic.com')) {
+              console.log('[Proxy] Blocked XHR:', url);
+              throw new Error('Blocked');
+            }
+            
+            // blob/dataはそのまま
+            if (!url.startsWith('blob:') && !url.startsWith('data:')) {
+              // プロキシ経由でなければ変換
+              if (!url.startsWith(PROXY_ORIGIN + '/proxy/')) {
+                const absoluteUrl = toAbsoluteUrl(url);
+                if (absoluteUrl.startsWith('http')) {
+                  const proxyUrl = encodeProxyUrl(absoluteUrl);
+                  console.log('[Proxy] XHR:', url, '->', proxyUrl);
+                  return originalOpen.call(this, method, proxyUrl, ...rest);
+                }
+              }
+            }
+          }
+          
+          return originalOpen.call(this, method, url, ...rest);
+        };
 
-// CSP緩和
-const cspMeta = `<meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:;">`;
+        // エラー抑制
+        const originalError = console.error;
+        console.error = function(...args) {
+          const msg = args.join(' ');
+          if (msg.includes('GSI') || msg.includes('google')) return;
+          return originalError.apply(console, args);
+        };
 
-html = html.replace(/<head[^>]*>/i, (match) => match + cspMeta + interceptScript);
+        console.warn = () => {};
+        
+        console.log('[Proxy] Intercept initialized');
+      })();
+    </script>
+  `;
 
-  html = html.replace(/<head[^>]*>/i, (match) => match + interceptScript);
+html = html.replace(/<head[^>]*>/i, (match) => match + interceptScript);
   
+  // Google関連スクリプト削除
   html = html.replace(/<script[^>]*src=[^>]*google[^>]*>[\s\S]*?<\/script>/gi, '');
   html = html.replace(/<script[^>]*src=[^>]*gstatic[^>]*>[\s\S]*?<\/script>/gi, '');
   html = html.replace(/<iframe[^>]*google[^>]*>[\s\S]*?<\/iframe>/gi, '');
-  html = html.replace(/<div[^>]*id=["']g_id[^>]*>[\s\S]*?<\/div>/gi, '');
-  html = html.replace(/google\.accounts\.id\.[^;]+;?/gi, '');
-
-  if (!html.includes('<base')) {
-   html = html.replace(/<head[^>]*>/i, `<head><base href="/proxy/${encodeProxyUrl(baseUrl)}">`);
- }
 
   if (!html.includes('charset')) {
     html = html.replace(/<head[^>]*>/i, '<head><meta charset="UTF-8">');
