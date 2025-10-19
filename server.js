@@ -291,20 +291,19 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
     const targetUrl = decodeProxyUrl(encodedUrl);
 
     console.log('📡 Proxying:', targetUrl);
-
-    const parsedUrl = new url.URL(targetUrl);
-    const ext = path.extname(parsedUrl.pathname).toLowerCase();
-    const staticExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.css', '.js', '.woff', '.woff2', '.ttf', '.svg', '.ico', '.mp4', '.webm', '.json'];
     
-    const shouldDirectFetch = staticExtensions.includes(ext) ||
+    const parsedUrl = new url.URL(targetUrl);
+const ext = path.extname(parsedUrl.pathname).toLowerCase();
+const staticExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.css', '.js', '.woff', '.woff2', '.ttf', '.svg', '.ico', '.mp4', '.webm', '.json'];
+
+const shouldDirectFetch = staticExtensions.includes(ext) ||
                          parsedUrl.pathname.includes('/api/') ||
                          parsedUrl.pathname.includes('/graphql/') ||
                          parsedUrl.pathname.includes('/1.1/') ||
                          parsedUrl.pathname.includes('/i/api/') ||
                          parsedUrl.pathname.includes('/2/') ||
-                         parsedUrl.pathname.startsWith('/i/api/') ||
                          parsedUrl.hostname.startsWith('api.') ||
-                         parsedUrl.hostname.includes('google') ||
+                         parsedUrl.hostname.includes('google');
                          // Xの重いページもaxiosで取得
                          (parsedUrl.hostname.includes('x.com') && 
                           (parsedUrl.pathname === '/home' || 
