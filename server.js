@@ -80,6 +80,8 @@ function decodeProxyUrl(encoded) {
   return Buffer.from(base64, 'base64').toString('utf-8');
 }
 
+// server.js の rewriteHTML() 関数を完全に置き換え
+
 function rewriteHTML(html, baseUrl) {
   const urlObj = new url.URL(baseUrl);
   const origin = `${urlObj.protocol}//${urlObj.host}`;
@@ -144,7 +146,7 @@ function rewriteHTML(html, baseUrl) {
     }
   });
 
-  // インターセプトスクリプト
+  // ⚠️ 修正: インターセプトスクリプト（二重プロキシ防止）
   const interceptScript = `
     <script>
       (function() {
@@ -184,6 +186,11 @@ function rewriteHTML(html, baseUrl) {
           return PROXY_ORIGIN + '/proxy/' + base64;
         }
         
+        // ⚠️ 重要: プロキシ化済みURLをチェック
+        function isAlreadyProxied(url) {
+          return url.includes(PROXY_ORIGIN) || url.startsWith('/proxy/');
+        }
+        
         // fetch インターセプト
         const originalFetch = window.fetch;
         window.fetch = function(resource, options) {
@@ -200,19 +207,18 @@ function rewriteHTML(html, baseUrl) {
             return originalFetch.call(this, resource, options);
           }
           
-          // プロキシ経由のURLはそのまま
-          if (url.startsWith(PROXY_ORIGIN + '/proxy/')) {
+          // ⚠️ 重要: 既にプロキシ化されているURLはそのまま
+          if (isAlreadyProxied(url)) {
             return originalFetch.call(this, resource, options);
           }
           
           const absoluteUrl = toAbsoluteUrl(url);
           
-          // 外部URLの場合
+          // 外部URLの場合のみプロキシ化
           if (absoluteUrl.startsWith('http')) {
             const proxyUrl = encodeProxyUrl(absoluteUrl);
             console.log('[Proxy] Fetch:', url, '->', proxyUrl);
             
-            // オプションを調整
             const newOptions = Object.assign({}, options);
             if (newOptions.mode === 'cors') {
               delete newOptions.mode;
@@ -240,8 +246,8 @@ function rewriteHTML(html, baseUrl) {
             
             // blob/dataはそのまま
             if (!url.startsWith('blob:') && !url.startsWith('data:')) {
-              // プロキシ経由でなければ変換
-              if (!url.startsWith(PROXY_ORIGIN + '/proxy/')) {
+              // ⚠️ 重要: 既にプロキシ化されていなければ変換
+              if (!isAlreadyProxied(url)) {
                 const absoluteUrl = toAbsoluteUrl(url);
                 if (absoluteUrl.startsWith('http')) {
                   const proxyUrl = encodeProxyUrl(absoluteUrl);
@@ -270,7 +276,7 @@ function rewriteHTML(html, baseUrl) {
     </script>
   `;
 
-html = html.replace(/<head[^>]*>/i, (match) => match + interceptScript);
+  html = html.replace(/<head[^>]*>/i, (match) => match + interceptScript);
   
   // Google関連スクリプト削除
   html = html.replace(/<script[^>]*src=[^>]*google[^>]*>[\s\S]*?<\/script>/gi, '');
