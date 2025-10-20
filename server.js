@@ -1,16 +1,25 @@
+// ===== 1. DEPENDENCIES =====
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const path = require('path');
 const url = require('url');
+const fs = require('fs');
 require('dotenv').config();
 
-// server.js の先頭に追加（require文の後）
+// ===== 2. INITIALIZATION =====
+const app = express();
+const PORT = process.env.PORT || 3000;
 
-const fs = require('fs');
+// ⚠️ 変数宣言（ファイル内で一度だけ）
+let browser;
+let puppeteer;
+let xLoginPage = null;
+let cachedXCookies = null;
+
 const COOKIE_FILE = path.join(__dirname, '.x-cookies.json');
 
-// Cookie保存関数
+// ===== 3. COOKIE PERSISTENCE FUNCTIONS =====
 function saveCookiesToFile(cookies) {
   try {
     fs.writeFileSync(COOKIE_FILE, JSON.stringify(cookies, null, 2));
@@ -20,7 +29,6 @@ function saveCookiesToFile(cookies) {
   }
 }
 
-// Cookie読み込み関数
 function loadCookiesFromFile() {
   try {
     if (fs.existsSync(COOKIE_FILE)) {
@@ -35,25 +43,399 @@ function loadCookiesFromFile() {
   return null;
 }
 
-// サーバー起動時にCookieを読み込み
+// Load cookies on startup
 cachedXCookies = loadCookiesFromFile();
 if (cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0) {
   console.log('✅ Cached cookies restored from file');
   console.log(`   Cookie count: ${cachedXCookies.length}`);
-  
-  // xLoginPageを初期化
-  (async () => {
+}
+
+// ===== 4. MIDDLEWARE =====
+app.use(cors());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use(express.static('public'));
+
+// ===== 5. UTILITY FUNCTIONS =====
+function encodeProxyUrl(targetUrl) {
+  return Buffer.from(targetUrl).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+function decodeProxyUrl(encoded) {
+  const base64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
+  return Buffer.from(base64, 'base64').toString('utf-8');
+}
+
+function rewriteHTML(html, baseUrl) {
+  const urlObj = new url.URL(baseUrl);
+  const origin = `${urlObj.protocol}//${urlObj.host}`;
+  const proxyOrigin = process.env.RENDER ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : `http://localhost:${PORT}`;
+
+  // href書き換え
+  html = html.replace(/href\s*=\s*["']([^"']+)["']/gi, (match, href) => {
+    if (href.startsWith('javascript:') || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:')) {
+      return match;
+    }
+    
+    let absoluteUrl = href;
     try {
+      if (href.startsWith('//')) {
+        absoluteUrl = urlObj.protocol + href;
+      } else if (href.startsWith('/')) {
+        absoluteUrl = origin + href;
+      } else if (!href.startsWith('http')) {
+        absoluteUrl = new url.URL(href, baseUrl).href;
+      }
+      return `href="/proxy/${encodeProxyUrl(absoluteUrl)}"`;
+    } catch (e) {
+      return match;
+    }
+  });
+
+  // src書き換え
+  html = html.replace(/src\s*=\s*["']([^"']+)["']/gi, (match, src) => {
+    if (src.startsWith('data:') || src.startsWith('blob:')) {
+      return match;
+    }
+    
+    let absoluteUrl = src;
+    try {
+      if (src.startsWith('//')) {
+        absoluteUrl = urlObj.protocol + src;
+      } else if (src.startsWith('/')) {
+        absoluteUrl = origin + src;
+      } else if (!src.startsWith('http')) {
+        absoluteUrl = new url.URL(src, baseUrl).href;
+      }
+      return `src="/proxy/${encodeProxyUrl(absoluteUrl)}"`;
+    } catch (e) {
+      return match;
+    }
+  });
+
+  // action書き換え
+  html = html.replace(/action\s*=\s*["']([^"']+)["']/gi, (match, action) => {
+    let absoluteUrl = action;
+    try {
+      if (action.startsWith('//')) {
+        absoluteUrl = urlObj.protocol + action;
+      } else if (action.startsWith('/')) {
+        absoluteUrl = origin + action;
+      } else if (!action.startsWith('http')) {
+        absoluteUrl = new url.URL(action, baseUrl).href;
+      }
+      return `action="/proxy/${encodeProxyUrl(absoluteUrl)}"`;
+    } catch (e) {
+      return match;
+    }
+  });
+
+  // インターセプトスクリプト
+  const interceptScript = `
+    <script>
+      (function() {
+        const PROXY_ORIGIN = '${proxyOrigin}';
+        const TARGET_ORIGIN = '${origin}';
+        
+        console.log('[Proxy] Initializing for', TARGET_ORIGIN);
+        
+        Object.defineProperty(window, 'google', {
+          get: () => undefined,
+          set: () => false,
+          configurable: false
+        });
+        
+        Object.defineProperty(window, 'gapi', {
+          get: () => undefined,
+          set: () => false,
+          configurable: false
+        });
+        
+        function toAbsoluteUrl(relativeUrl) {
+          if (relativeUrl.startsWith('http://') || relativeUrl.startsWith('https://')) {
+            return relativeUrl;
+          }
+          if (relativeUrl.startsWith('//')) {
+            return 'https:' + relativeUrl;
+          }
+          if (relativeUrl.startsWith('/')) {
+            return TARGET_ORIGIN + relativeUrl;
+          }
+          return TARGET_ORIGIN + '/' + relativeUrl;
+        }
+        
+        function encodeProxyUrl(url) {
+          const base64 = btoa(url).replace(/\\+/g, '-').replace(/\\\//g, '_').replace(/=/g, '');
+          return PROXY_ORIGIN + '/proxy/' + base64;
+        }
+        
+        function isAlreadyProxied(url) {
+          return url.includes(PROXY_ORIGIN) || url.startsWith('/proxy/');
+        }
+        
+        const originalFetch = window.fetch;
+        window.fetch = function(resource, options) {
+          let url = typeof resource === 'string' ? resource : (resource.url || resource);
+          
+          if (url.includes('google.com') || url.includes('gstatic.com')) {
+            console.log('[Proxy] Blocked:', url);
+            return Promise.reject(new Error('Blocked'));
+          }
+          
+          if (url.startsWith('blob:') || url.startsWith('data:')) {
+            return originalFetch.call(this, resource, options);
+          }
+          
+          if (isAlreadyProxied(url)) {
+            return originalFetch.call(this, resource, options);
+          }
+          
+          const absoluteUrl = toAbsoluteUrl(url);
+          
+          if (absoluteUrl.startsWith('http')) {
+            const proxyUrl = encodeProxyUrl(absoluteUrl);
+            console.log('[Proxy] Fetch:', url, '->', proxyUrl);
+            
+            const newOptions = Object.assign({}, options);
+            if (newOptions.mode === 'cors') {
+              delete newOptions.mode;
+            }
+            
+            if (typeof resource === 'string') {
+              return originalFetch.call(this, proxyUrl, newOptions);
+            } else {
+              return originalFetch.call(this, new Request(proxyUrl, newOptions));
+            }
+          }
+          
+          return originalFetch.call(this, resource, options);
+        };
+
+        const originalOpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+          if (typeof url === 'string') {
+            if (url.includes('google.com') || url.includes('gstatic.com')) {
+              console.log('[Proxy] Blocked XHR:', url);
+              throw new Error('Blocked');
+            }
+            
+            if (!url.startsWith('blob:') && !url.startsWith('data:')) {
+              if (!isAlreadyProxied(url)) {
+                const absoluteUrl = toAbsoluteUrl(url);
+                if (absoluteUrl.startsWith('http')) {
+                  const proxyUrl = encodeProxyUrl(absoluteUrl);
+                  console.log('[Proxy] XHR:', url, '->', proxyUrl);
+                  return originalOpen.call(this, method, proxyUrl, ...rest);
+                }
+              }
+            }
+          }
+          
+          return originalOpen.call(this, method, url, ...rest);
+        };
+
+        const originalError = console.error;
+        console.error = function(...args) {
+          const msg = args.join(' ');
+          if (msg.includes('GSI') || msg.includes('google')) return;
+          return originalError.apply(console, args);
+        };
+
+        console.warn = () => {};
+        
+        console.log('[Proxy] Intercept initialized');
+      })();
+    </script>
+  `;
+
+  html = html.replace(/<head[^>]*>/i, (match) => match + interceptScript);
+  
+  html = html.replace(/<script[^>]*src=[^>]*google[^>]*>[\s\S]*?<\/script>/gi, '');
+  html = html.replace(/<script[^>]*src=[^>]*gstatic[^>]*>[\s\S]*?<\/script>/gi, '');
+  html = html.replace(/<iframe[^>]*google[^>]*>[\s\S]*?<\/iframe>/gi, '');
+
+  if (!html.includes('charset')) {
+    html = html.replace(/<head[^>]*>/i, '<head><meta charset="UTF-8">');
+  }
+
+  return html;
+}
+
+// ===== 6. PUPPETEER FUNCTIONS =====
+async function loadPuppeteer() {
+  if (process.env.RENDER) {
+    const puppeteerCore = require('puppeteer-core');
+    const chromium = require('@sparticuz/chromium');
+    return { puppeteerCore, chromium, isRender: true };
+  } else {
+    const puppeteerLib = require('puppeteer');
+    return { puppeteerCore: puppeteerLib, chromium: null, isRender: false };
+  }
+}
+
+async function initBrowser() {
+  if (!browser) {
+    try {
+      if (!puppeteer) {
+        puppeteer = await loadPuppeteer();
+      }
+
+      let launchConfig;
+      if (puppeteer.isRender) {
+        const chromium = puppeteer.chromium;
+        launchConfig = {
+          args: [
+            ...chromium.args,
+            '--disable-blink-features=AutomationControlled',
+            '--disable-features=IsolateOrigins,site-per-process'
+          ],
+          defaultViewport: chromium.defaultViewport,
+          executablePath: await chromium.executablePath(),
+          headless: chromium.headless,
+        };
+      } else {
+        launchConfig = {
+          headless: 'new',
+          args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--disable-blink-features=AutomationControlled',
+            '--disable-features=IsolateOrigins,site-per-process'
+          ]
+        };
+      }
+
+      browser = await puppeteer.puppeteerCore.launch(launchConfig);
+      console.log('✅ Browser initialized');
+    } catch (error) {
+      console.error('❌ Browser launch failed:', error.message);
+      throw error;
+    }
+  }
+  return browser;
+}
+
+async function initXLoginPage() {
+  const browserInstance = await initBrowser();
+  const page = await browserInstance.newPage();
+
+  await page.setViewport({ 
+    width: 1920, 
+    height: 1080,
+    deviceScaleFactor: 1
+  });
+
+  await page.setUserAgent(
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+  );
+
+  await page.setExtraHTTPHeaders({
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Cache-Control': 'max-age=0',
+    'Sec-Ch-Ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+    'Sec-Ch-Ua-Mobile': '?0',
+    'Sec-Ch-Ua-Platform': '"Windows"',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Upgrade-Insecure-Requests': '1'
+  });
+
+  await page.setRequestInterception(true);
+  page.removeAllListeners('request');
+  
+  page.on('request', (request) => {
+    if (request.isInterceptResolutionHandled()) {
+      return;
+    }
+    
+    const requestUrl = request.url();
+    if (requestUrl.includes('google.com') || 
+        requestUrl.includes('gstatic.com') ||
+        requestUrl.includes('googleapis.com')) {
+      request.abort().catch(() => {});
+      return;
+    }
+    
+    request.continue().catch(() => {});
+  });
+
+  await page.evaluateOnNewDocument(() => {
+    delete Object.getPrototypeOf(navigator).webdriver;
+    
+    Object.defineProperty(navigator, 'webdriver', {
+      get: () => undefined,
+      configurable: false
+    });
+
+    window.chrome = {
+      app: { isInstalled: false },
+      runtime: {},
+      loadTimes: function() {},
+      csi: function() {},
+    };
+
+    Object.defineProperty(window, 'google', {
+      get() { return undefined; },
+      set() { return false; },
+      configurable: false
+    });
+
+    Object.defineProperty(window, 'gapi', {
+      get() { return undefined; },
+      set() { return false; },
+      configurable: false
+    });
+
+    const originalError = console.error;
+    const originalWarn = console.warn;
+    
+    console.error = function(...args) {
+      const msg = args.join(' ');
+      if (msg.includes('GSI') || msg.includes('google')) return;
+      return originalError.apply(console, args);
+    };
+
+    console.warn = function(...args) {
+      const msg = args.join(' ');
+      if (msg.includes('GSI') || msg.includes('google')) return;
+      return originalWarn.apply(console, args);
+    };
+
+    window.addEventListener('unhandledrejection', (event) => {
+      const msg = String(event.reason);
+      if (msg.includes('google') || msg.includes('GSI')) {
+        event.preventDefault();
+      }
+    });
+
+    console.log('[Ultra-Stealth] Initialized');
+  });
+
+  console.log('✅ X login page initialized with ultra-stealth mode');
+  return page;
+}
+
+// Initialize xLoginPage with cached cookies
+(async () => {
+  if (cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0) {
+    try {
+      console.log('🔄 Initializing xLoginPage with cached cookies...');
       xLoginPage = await initXLoginPage();
       await xLoginPage.setCookie(...cachedXCookies);
       console.log('✅ xLoginPage initialized with cached cookies');
     } catch (e) {
       console.log('⚠️ Could not initialize xLoginPage:', e.message);
     }
-  })();
-}
+  }
+})();
 
-// ===== app.post('/api/x-inject-cookies') を修正 =====
+
 
 app.post('/api/x-inject-cookies', async (req, res) => {
   const { authToken, ct0Token } = req.body;
@@ -233,23 +615,6 @@ app.delete('/api/x-cookies', async (req, res) => {
     });
   }
 });
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-let browser;
-let puppeteer;
-
-async function loadPuppeteer() {
-  if (process.env.RENDER) {
-    const puppeteerCore = require('puppeteer-core');
-    const chromium = require('@sparticuz/chromium');
-    return { puppeteerCore, chromium, isRender: true };
-  } else {
-    const puppeteerLib = require('puppeteer');
-    return { puppeteerCore: puppeteerLib, chromium: null, isRender: false };
-  }
-}
 
 async function initBrowser() {
   if (!browser) {
@@ -519,8 +884,6 @@ function rewriteHTML(html, baseUrl) {
   return html;
 }
 
-// server.js の app.get('/proxy/:encodedUrl*') を完全に置き換え
-// 既存の app.get('/proxy/:encodedUrl*', ...) 全体を削除してから、これを貼り付け
 
 // server.js の app.post('/proxy/:encodedUrl*') を完全に置き換え
 
@@ -648,9 +1011,6 @@ app.get('/health', (req, res) => {
 
 // ===== Xログイン機能 =====
 const { loginToX } = require('./x-login');
-
-let xLoginPage = null;
-let cachedXCookies = null;
 
 // ===== 以下を const { loginToX } = require('./x-login'); の直後に追加 =====
 
