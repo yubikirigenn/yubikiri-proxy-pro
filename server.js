@@ -71,9 +71,16 @@ function rewriteHTML(html, baseUrl) {
   const origin = `${urlObj.protocol}//${urlObj.host}`;
   const proxyOrigin = process.env.RENDER ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : `http://localhost:${PORT}`;
 
+  // 既にプロキシ化されているかチェック
+  function isAlreadyProxied(urlString) {
+    return urlString.includes('/proxy/') || urlString.includes(proxyOrigin);
+  }
+
   // href書き換え
   html = html.replace(/href\s*=\s*["']([^"']+)["']/gi, (match, href) => {
-    if (href.startsWith('javascript:') || href.startsWith('#') || href.startsWith('mailto:') || href.startsWith('tel:')) {
+    if (href.startsWith('javascript:') || href.startsWith('#') || 
+        href.startsWith('mailto:') || href.startsWith('tel:') || 
+        isAlreadyProxied(href)) {
       return match;
     }
     
@@ -94,7 +101,7 @@ function rewriteHTML(html, baseUrl) {
 
   // src書き換え
   html = html.replace(/src\s*=\s*["']([^"']+)["']/gi, (match, src) => {
-    if (src.startsWith('data:') || src.startsWith('blob:')) {
+    if (src.startsWith('data:') || src.startsWith('blob:') || isAlreadyProxied(src)) {
       return match;
     }
     
@@ -115,6 +122,10 @@ function rewriteHTML(html, baseUrl) {
 
   // action書き換え
   html = html.replace(/action\s*=\s*["']([^"']+)["']/gi, (match, action) => {
+    if (isAlreadyProxied(action)) {
+      return match;
+    }
+    
     let absoluteUrl = action;
     try {
       if (action.startsWith('//')) {
@@ -130,7 +141,7 @@ function rewriteHTML(html, baseUrl) {
     }
   });
 
-  // インターセプトスクリプト
+  // インターセプトスクリプト（無限ループ防止強化版）
   const interceptScript = `
     <script>
       (function() {
@@ -139,6 +150,7 @@ function rewriteHTML(html, baseUrl) {
         
         console.log('[Proxy] Initializing for', TARGET_ORIGIN);
         
+        // Google無効化
         Object.defineProperty(window, 'google', {
           get: () => undefined,
           set: () => false,
@@ -169,29 +181,38 @@ function rewriteHTML(html, baseUrl) {
           return PROXY_ORIGIN + '/proxy/' + base64;
         }
         
+        // 既にプロキシ化済みかチェック
         function isAlreadyProxied(url) {
-          return url.includes(PROXY_ORIGIN) || url.startsWith('/proxy/');
+          return url.includes(PROXY_ORIGIN) || 
+                 url.startsWith('/proxy/') || 
+                 url.includes('/proxy/');
         }
         
+        // fetch インターセプト
         const originalFetch = window.fetch;
         window.fetch = function(resource, options) {
           let url = typeof resource === 'string' ? resource : (resource.url || resource);
           
+          // Google関連はブロック
           if (url.includes('google.com') || url.includes('gstatic.com')) {
             console.log('[Proxy] Blocked:', url);
             return Promise.reject(new Error('Blocked'));
           }
           
+          // blob/dataはそのまま
           if (url.startsWith('blob:') || url.startsWith('data:')) {
             return originalFetch.call(this, resource, options);
           }
           
+          // 既にプロキシ化されているURLはそのまま
           if (isAlreadyProxied(url)) {
+            console.log('[Proxy] Already proxied, passing through:', url);
             return originalFetch.call(this, resource, options);
           }
           
           const absoluteUrl = toAbsoluteUrl(url);
           
+          // 外部URLの場合のみプロキシ化
           if (absoluteUrl.startsWith('http')) {
             const proxyUrl = encodeProxyUrl(absoluteUrl);
             console.log('[Proxy] Fetch:', url, '->', proxyUrl);
@@ -211,15 +232,19 @@ function rewriteHTML(html, baseUrl) {
           return originalFetch.call(this, resource, options);
         };
 
+        // XMLHttpRequest インターセプト
         const originalOpen = XMLHttpRequest.prototype.open;
         XMLHttpRequest.prototype.open = function(method, url, ...rest) {
           if (typeof url === 'string') {
+            // Google関連はブロック
             if (url.includes('google.com') || url.includes('gstatic.com')) {
               console.log('[Proxy] Blocked XHR:', url);
               throw new Error('Blocked');
             }
             
+            // blob/dataはそのまま
             if (!url.startsWith('blob:') && !url.startsWith('data:')) {
+              // 既にプロキシ化されていなければ変換
               if (!isAlreadyProxied(url)) {
                 const absoluteUrl = toAbsoluteUrl(url);
                 if (absoluteUrl.startsWith('http')) {
@@ -227,6 +252,8 @@ function rewriteHTML(html, baseUrl) {
                   console.log('[Proxy] XHR:', url, '->', proxyUrl);
                   return originalOpen.call(this, method, proxyUrl, ...rest);
                 }
+              } else {
+                console.log('[Proxy] Already proxied XHR, passing through:', url);
               }
             }
           }
@@ -234,6 +261,25 @@ function rewriteHTML(html, baseUrl) {
           return originalOpen.call(this, method, url, ...rest);
         };
 
+        // location.href の上書きを防止
+        const originalLocationSetter = Object.getOwnPropertyDescriptor(window.Location.prototype, 'href').set;
+        Object.defineProperty(window.Location.prototype, 'href', {
+          set: function(value) {
+            if (isAlreadyProxied(value)) {
+              console.log('[Proxy] Preventing location.href loop:', value);
+              return;
+            }
+            const absoluteUrl = toAbsoluteUrl(value);
+            const proxyUrl = encodeProxyUrl(absoluteUrl);
+            console.log('[Proxy] Redirecting location.href to:', proxyUrl);
+            originalLocationSetter.call(this, proxyUrl);
+          },
+          get: function() {
+            return window.location.href;
+          }
+        });
+
+        // エラー抑制
         const originalError = console.error;
         console.error = function(...args) {
           const msg = args.join(' ');
@@ -243,13 +289,14 @@ function rewriteHTML(html, baseUrl) {
 
         console.warn = () => {};
         
-        console.log('[Proxy] Intercept initialized');
+        console.log('[Proxy] Intercept initialized with loop prevention');
       })();
     </script>
   `;
 
   html = html.replace(/<head[^>]*>/i, (match) => match + interceptScript);
   
+  // Google関連スクリプト削除
   html = html.replace(/<script[^>]*src=[^>]*google[^>]*>[\s\S]*?<\/script>/gi, '');
   html = html.replace(/<script[^>]*src=[^>]*gstatic[^>]*>[\s\S]*?<\/script>/gi, '');
   html = html.replace(/<iframe[^>]*google[^>]*>[\s\S]*?<\/iframe>/gi, '');
@@ -462,7 +509,7 @@ app.get('/test-decode/:encoded', (req, res) => {
 
 // ===== 8. PROXY ROUTES (CRITICAL: GET route added) =====
 
-// 🔴 CRITICAL: GET proxy route (was missing!)
+// 🔴 CRITICAL: GET proxy route with Puppeteer
 app.get('/proxy/:encodedUrl*', async (req, res) => {
   try {
     const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
@@ -471,55 +518,167 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
     console.log('📡 GET Proxying:', targetUrl);
 
     const parsedUrl = new url.URL(targetUrl);
-    const headers = {
-      'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      'Accept': req.headers.accept || 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': req.headers['accept-language'] || 'en-US,en;q=0.9',
-    };
+    const isXDomain = parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com');
+    const isHTML = !parsedUrl.pathname.match(/\.(js|css|json|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|mp4|webm)$/i);
 
-    headers['Referer'] = `${parsedUrl.protocol}//${parsedUrl.host}/`;
-
-    // Use cached cookies for X.com
-    if (cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0 && 
-        (parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com'))) {
-      try {
-        let cookieString = cachedXCookies
-          .map(c => `${c.name}=${c.value}`)
-          .join('; ');
-        headers['Cookie'] = cookieString;
-        console.log('🍪 Using cached cookies for GET');
-      } catch (e) {
-        console.log('⚠️ Cookie mapping error:', e.message);
-      }
-    } else if (req.headers.cookie) {
-      headers['Cookie'] = req.headers.cookie;
-    }
-
-    const response = await axios({
-      method: 'GET',
-      url: targetUrl,
-      headers: headers,
-      responseType: 'arraybuffer',
-      maxRedirects: 5,
-      validateStatus: () => true,
-      timeout: 30000
-    });
-
-    console.log(`📥 GET Response: ${response.status}`);
-
-    const contentType = response.headers['content-type'] || '';
-
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-
-    if (contentType.includes('text/html')) {
-      let htmlContent = response.data.toString('utf-8');
-      htmlContent = rewriteHTML(htmlContent, targetUrl);
+    // HTMLページの場合はPuppeteerを使用
+    if (isHTML) {
+      console.log('🌐 Using Puppeteer for HTML page');
       
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.send(htmlContent);
+      let page;
+      const useXLoginPage = isXDomain && xLoginPage && cachedXCookies && cachedXCookies.length > 0;
+
+      try {
+        if (useXLoginPage) {
+          console.log('♻️  Reusing xLoginPage with cached cookies');
+          page = xLoginPage;
+        } else {
+          console.log('🆕 Creating new page');
+          const browserInstance = await initBrowser();
+          page = await browserInstance.newPage();
+          
+          await page.setViewport({ width: 1920, height: 1080 });
+          await page.setUserAgent(
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+          );
+
+          // X.com用のCookieをセット
+          if (isXDomain && cachedXCookies && cachedXCookies.length > 0) {
+            try {
+              await page.setCookie(...cachedXCookies);
+              console.log('🍪 Cookies set for new page');
+            } catch (e) {
+              console.log('⚠️ Could not set cookies:', e.message);
+            }
+          }
+        }
+
+        // ナビゲーション
+        console.log(`🌐 Navigating to: ${targetUrl}`);
+        await page.goto(targetUrl, {
+          waitUntil: ['domcontentloaded', 'networkidle2'],
+          timeout: 30000
+        });
+
+        // ページが完全にロードされるまで待機
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        // HTMLを取得
+        const htmlContent = await page.content();
+        console.log(`✅ Page loaded successfully (${htmlContent.length} bytes)`);
+
+        // 新しく作成したページをクローズ（xLoginPageは維持）
+        if (!useXLoginPage && page) {
+          await page.close();
+        }
+
+        // HTMLを書き換えて送信
+        const rewrittenHTML = rewriteHTML(htmlContent, targetUrl);
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.send(rewrittenHTML);
+
+      } catch (navError) {
+        console.error('❌ Navigation error:', navError.message);
+        
+        // エラーページを表示
+        res.status(500).send(`
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="UTF-8">
+            <title>プロキシエラー</title>
+            <style>
+              body { 
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
+                color: #fff;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                height: 100vh;
+                margin: 0;
+              }
+              .error-box {
+                background: rgba(255,255,255,0.05);
+                border: 1px solid rgba(255,255,255,0.1);
+                border-radius: 8px;
+                padding: 40px;
+                max-width: 500px;
+                text-align: center;
+              }
+              h1 { color: #ff6b6b; margin-bottom: 20px; }
+              p { color: rgba(255,255,255,0.7); line-height: 1.6; }
+              code { 
+                background: rgba(0,0,0,0.3);
+                padding: 2px 8px;
+                border-radius: 4px;
+                font-family: monospace;
+              }
+              a {
+                display: inline-block;
+                margin-top: 20px;
+                padding: 12px 24px;
+                background: #b0b0b0;
+                color: #1a1a1a;
+                text-decoration: none;
+                border-radius: 6px;
+                font-weight: 600;
+              }
+              a:hover { background: #d0d0d0; }
+            </style>
+          </head>
+          <body>
+            <div class="error-box">
+              <h1>❌ ページの読み込みに失敗しました</h1>
+              <p><strong>対象URL:</strong><br><code>${targetUrl}</code></p>
+              <p><strong>エラー:</strong><br>${navError.message}</p>
+              <a href="/">トップページに戻る</a>
+            </div>
+          </body>
+          </html>
+        `);
+        
+        // 新しく作成したページをクローズ
+        if (!useXLoginPage && page) {
+          await page.close().catch(() => {});
+        }
+      }
     } else {
+      // 非HTMLリソースはaxiosで取得
+      console.log('📦 Fetching non-HTML resource with axios');
+      
+      const headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': '*/*',
+        'Referer': `${parsedUrl.protocol}//${parsedUrl.host}/`,
+      };
+
+      // X.com用のCookie
+      if (isXDomain && cachedXCookies && cachedXCookies.length > 0) {
+        try {
+          headers['Cookie'] = cachedXCookies.map(c => `${c.name}=${c.value}`).join('; ');
+          console.log('🍪 Using cached cookies for resource');
+        } catch (e) {
+          console.log('⚠️ Cookie error:', e.message);
+        }
+      }
+
+      const response = await axios({
+        method: 'GET',
+        url: targetUrl,
+        headers: headers,
+        responseType: 'arraybuffer',
+        maxRedirects: 5,
+        validateStatus: () => true,
+        timeout: 15000
+      });
+
+      console.log(`📥 Resource loaded: ${response.status}`);
+
+      const contentType = response.headers['content-type'] || 'application/octet-stream';
       res.setHeader('Content-Type', contentType);
+      res.setHeader('Access-Control-Allow-Origin', '*');
       res.send(response.data);
     }
 
