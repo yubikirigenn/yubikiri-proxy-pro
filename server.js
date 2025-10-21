@@ -368,6 +368,10 @@ async function initXLoginPage() {
   const browserInstance = await initBrowser();
   const page = await browserInstance.newPage();
 
+  // タイムアウトを延長（X.comは読み込みが遅い）
+  page.setDefaultNavigationTimeout(60000);
+  page.setDefaultTimeout(60000);
+
   await page.setViewport({ 
     width: 1920, 
     height: 1080,
@@ -537,6 +541,10 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
           const browserInstance = await initBrowser();
           page = await browserInstance.newPage();
           
+          // タイムアウトを延長
+          page.setDefaultNavigationTimeout(60000);
+          page.setDefaultTimeout(60000);
+          
           await page.setViewport({ width: 1920, height: 1080 });
           await page.setUserAgent(
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
@@ -553,15 +561,48 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
           }
         }
 
-        // ナビゲーション
+        // ナビゲーション（X.comは読み込みが遅いので戦略を変更）
         console.log(`🌐 Navigating to: ${targetUrl}`);
-        await page.goto(targetUrl, {
-          waitUntil: ['domcontentloaded', 'networkidle2'],
-          timeout: 30000
-        });
+        
+        if (isXDomain) {
+          // X.com専用の読み込み戦略
+          try {
+            await page.goto(targetUrl, {
+              waitUntil: 'domcontentloaded',
+              timeout: 60000
+            });
+            console.log('✅ DOM loaded');
+          } catch (navErr) {
+            console.log('⚠️ Navigation timeout, but DOM may be loaded:', navErr.message);
+          }
 
-        // ページが完全にロードされるまで待機
-        await new Promise(resolve => setTimeout(resolve, 2000));
+          // X.comの主要な要素が出現するまで待機（タイムアウト付き）
+          try {
+            await Promise.race([
+              page.waitForSelector('div[data-testid="primaryColumn"]', { timeout: 10000 }),
+              page.waitForSelector('main[role="main"]', { timeout: 10000 }),
+              new Promise(resolve => setTimeout(resolve, 10000))
+            ]);
+            console.log('✅ Main content detected');
+          } catch (e) {
+            console.log('⚠️ Main content not detected, continuing anyway');
+          }
+
+          // さらに少し待機（動的コンテンツの読み込み）
+          await new Promise(resolve => setTimeout(resolve, 3000));
+        } else {
+          // 通常サイトの読み込み戦略
+          try {
+            await page.goto(targetUrl, {
+              waitUntil: 'networkidle2',
+              timeout: 30000
+            });
+          } catch (navErr) {
+            console.log('⚠️ Navigation timeout:', navErr.message);
+          }
+          
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
 
         // HTMLを取得
         const htmlContent = await page.content();
