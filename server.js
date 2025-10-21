@@ -514,18 +514,23 @@ app.get('/test-decode/:encoded', (req, res) => {
 });
 
 app.get('/test-cookies', (req, res) => {
+  const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
+  
   res.json({
-    hasCachedCookies: !!(cachedXCookies && cachedXCookies.length > 0),
-    cookieCount: cachedXCookies ? cachedXCookies.length : 0,
-    cookies: cachedXCookies ? cachedXCookies.map(c => ({
-      name: c.name,
-      domain: c.domain,
-      value: c.value.substring(0, 20) + '...',
-      hasValue: !!c.value,
-      valueLength: c.value.length
-    })) : [],
-    hasAuthToken: cachedXCookies ? !!cachedXCookies.find(c => c.name === 'auth_token') : false,
-    hasCt0: cachedXCookies ? !!cachedXCookies.find(c => c.name === 'ct0') : false
+    hasCachedCookies: hasCookies,
+    cookieCount: hasCookies ? cachedXCookies.length : 0,
+    cookies: hasCookies ? cachedXCookies.map(c => {
+      if (!c) return { error: 'null cookie' };
+      return {
+        name: c.name || 'no-name',
+        domain: c.domain || 'no-domain',
+        value: c.value ? (c.value.substring(0, 20) + '...') : 'no-value',
+        hasValue: !!c.value,
+        valueLength: c.value ? c.value.length : 0
+      };
+    }) : [],
+    hasAuthToken: hasCookies ? !!cachedXCookies.find(c => c && c.name === 'auth_token') : false,
+    hasCt0: hasCookies ? !!cachedXCookies.find(c => c && c.name === 'ct0') : false
   });
 });
 
@@ -548,7 +553,8 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
       console.log('🌐 Using Puppeteer for HTML page');
       
       let page;
-      const useXLoginPage = isXDomain && xLoginPage && cachedXCookies && cachedXCookies.length > 0;
+      const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
+      const useXLoginPage = isXDomain && xLoginPage && hasCookies;
 
       try {
         if (useXLoginPage) {
@@ -569,10 +575,13 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
           );
 
           // X.com用のCookieをセット
-          if (isXDomain && cachedXCookies && cachedXCookies.length > 0) {
+          if (isXDomain && hasCookies) {
             try {
-              await page.setCookie(...cachedXCookies);
-              console.log('🍪 Cookies set for new page');
+              const validCookies = cachedXCookies.filter(c => c && c.name && c.value);
+              if (validCookies.length > 0) {
+                await page.setCookie(...validCookies);
+                console.log('🍪 Cookies set for new page:', validCookies.length);
+              }
             } catch (e) {
               console.log('⚠️ Could not set cookies:', e.message);
             }
@@ -714,10 +723,17 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
       };
 
       // X.com用のCookie
-      if (isXDomain && cachedXCookies && cachedXCookies.length > 0) {
+      if (isXDomain && hasCookies) {
         try {
-          headers['Cookie'] = cachedXCookies.map(c => `${c.name}=${c.value}`).join('; ');
-          console.log('🍪 Using cached cookies for resource');
+          const cookieString = cachedXCookies
+            .filter(c => c && c.name && c.value)
+            .map(c => `${c.name}=${c.value}`)
+            .join('; ');
+          
+          if (cookieString) {
+            headers['Cookie'] = cookieString;
+            console.log('🍪 Using cached cookies for resource');
+          }
         } catch (e) {
           console.log('⚠️ Cookie error:', e.message);
         }
@@ -773,18 +789,24 @@ app.post('/proxy/:encodedUrl*', async (req, res) => {
 
     // X.com用のCookie処理
     if (isXDomain) {
-      if (cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0) {
+      const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
+      
+      if (hasCookies) {
         try {
           let cookieString = cachedXCookies
-            .map(c => `${c.name}=${c.value}`)
+            .map(c => c && c.name && c.value ? `${c.name}=${c.value}` : '')
+            .filter(s => s)
             .join('; ');
-          headers['Cookie'] = cookieString;
-          console.log('🍪 Using cached cookies for POST');
-          console.log('🍪 Cookie count:', cachedXCookies.length);
+          
+          if (cookieString) {
+            headers['Cookie'] = cookieString;
+            console.log('🍪 Using cached cookies for POST');
+            console.log('🍪 Cookie count:', cachedXCookies.length);
+          }
           
           // CSRF トークン（ct0）を x-csrf-token ヘッダーに追加
-          const ct0Cookie = cachedXCookies.find(c => c.name === 'ct0');
-          if (ct0Cookie) {
+          const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
+          if (ct0Cookie && ct0Cookie.value) {
             headers['x-csrf-token'] = ct0Cookie.value;
             console.log('🔐 Added x-csrf-token:', ct0Cookie.value.substring(0, 10) + '...');
           } else {
@@ -792,14 +814,15 @@ app.post('/proxy/:encodedUrl*', async (req, res) => {
           }
           
           // auth_tokenの確認
-          const authToken = cachedXCookies.find(c => c.name === 'auth_token');
-          if (authToken) {
+          const authToken = cachedXCookies.find(c => c && c.name === 'auth_token');
+          if (authToken && authToken.value) {
             console.log('✅ auth_token found');
           } else {
             console.log('⚠️ auth_token not found!');
           }
         } catch (e) {
           console.log('⚠️ Cookie mapping error:', e.message);
+          console.error(e.stack);
         }
       } else {
         console.log('❌ No cached cookies available!');
@@ -1062,8 +1085,8 @@ app.get('/api/x-cookies', async (req, res) => {
     let authToken = null;
 
     if (hasCachedCookies) {
-      cookies = cachedXCookies;
-      authToken = cookies.find(c => c && c.name === 'auth_token');
+      cookies = cachedXCookies.filter(c => c && c.name);
+      authToken = cookies.find(c => c.name === 'auth_token');
     } else if (xLoginPage) {
       try {
         cookies = await xLoginPage.cookies();
@@ -1076,14 +1099,14 @@ app.get('/api/x-cookies', async (req, res) => {
 
     return res.json({
       success: true,
-      isLoggedIn: !!authToken,
+      isLoggedIn: !!(authToken && authToken.value),
       cached: hasCachedCookies,
       hasCachedCookies: hasCachedCookies,
       hasXLoginPage: !!xLoginPage,
       cookieCount: cookies.length,
       cookies: cookies.map(c => ({
-        name: c.name,
-        domain: c.domain,
+        name: c.name || 'unknown',
+        domain: c.domain || 'unknown',
         expires: c.expires ? new Date(c.expires * 1000).toISOString() : 'session'
       })),
       currentUrl: xLoginPage ? xLoginPage.url() : 'N/A',
@@ -1092,6 +1115,7 @@ app.get('/api/x-cookies', async (req, res) => {
 
   } catch (error) {
     console.error('[API] GET /api/x-cookies error:', error.message);
+    console.error('[API] Stack:', error.stack);
     return res.status(500).json({
       success: false,
       error: error.message,
