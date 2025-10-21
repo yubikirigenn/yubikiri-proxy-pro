@@ -491,7 +491,9 @@ app.get('/test', (req, res) => {
   res.json({ 
     status: 'Routes are working!',
     hasCachedCookies: !!(cachedXCookies && cachedXCookies.length > 0),
-    hasXLoginPage: !!xLoginPage
+    hasXLoginPage: !!xLoginPage,
+    cookieCount: cachedXCookies ? cachedXCookies.length : 0,
+    cookieNames: cachedXCookies ? cachedXCookies.map(c => c.name) : []
   });
 });
 
@@ -509,6 +511,22 @@ app.get('/test-decode/:encoded', (req, res) => {
       encoded: req.params.encoded
     });
   }
+});
+
+app.get('/test-cookies', (req, res) => {
+  res.json({
+    hasCachedCookies: !!(cachedXCookies && cachedXCookies.length > 0),
+    cookieCount: cachedXCookies ? cachedXCookies.length : 0,
+    cookies: cachedXCookies ? cachedXCookies.map(c => ({
+      name: c.name,
+      domain: c.domain,
+      value: c.value.substring(0, 20) + '...',
+      hasValue: !!c.value,
+      valueLength: c.value.length
+    })) : [],
+    hasAuthToken: cachedXCookies ? !!cachedXCookies.find(c => c.name === 'auth_token') : false,
+    hasCt0: cachedXCookies ? !!cachedXCookies.find(c => c.name === 'ct0') : false
+  });
 });
 
 // ===== 8. PROXY ROUTES (CRITICAL: GET route added) =====
@@ -732,7 +750,7 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
   }
 });
 
-// POST proxy route
+// POST proxy route（X API対応強化版）
 app.post('/proxy/:encodedUrl*', async (req, res) => {
   try {
     const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
@@ -741,27 +759,61 @@ app.post('/proxy/:encodedUrl*', async (req, res) => {
     console.log('📡 POST Proxying:', targetUrl);
 
     const parsedUrl = new url.URL(targetUrl);
+    const isXDomain = parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com');
+    
     const headers = {
-      'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      'Accept': req.headers.accept || '*/*',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'Accept': '*/*',
       'Content-Type': req.headers['content-type'] || 'application/json',
-      'Accept-Language': req.headers['accept-language'] || 'en-US,en;q=0.9',
+      'Accept-Language': 'en-US,en;q=0.9',
     };
 
     headers['Origin'] = `${parsedUrl.protocol}//${parsedUrl.host}`;
     headers['Referer'] = `${parsedUrl.protocol}//${parsedUrl.host}/`;
 
-    // Use cached cookies
-    if (cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0 && 
-        (parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com'))) {
-      try {
-        let cookieString = cachedXCookies
-          .map(c => `${c.name}=${c.value}`)
-          .join('; ');
-        headers['Cookie'] = cookieString;
-        console.log('🍪 Using cached cookies for POST');
-      } catch (e) {
-        console.log('⚠️ Cookie mapping error:', e.message);
+    // X.com用のCookie処理
+    if (isXDomain) {
+      if (cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0) {
+        try {
+          let cookieString = cachedXCookies
+            .map(c => `${c.name}=${c.value}`)
+            .join('; ');
+          headers['Cookie'] = cookieString;
+          console.log('🍪 Using cached cookies for POST');
+          console.log('🍪 Cookie count:', cachedXCookies.length);
+          
+          // CSRF トークン（ct0）を x-csrf-token ヘッダーに追加
+          const ct0Cookie = cachedXCookies.find(c => c.name === 'ct0');
+          if (ct0Cookie) {
+            headers['x-csrf-token'] = ct0Cookie.value;
+            console.log('🔐 Added x-csrf-token:', ct0Cookie.value.substring(0, 10) + '...');
+          } else {
+            console.log('⚠️ ct0 cookie not found!');
+          }
+          
+          // auth_tokenの確認
+          const authToken = cachedXCookies.find(c => c.name === 'auth_token');
+          if (authToken) {
+            console.log('✅ auth_token found');
+          } else {
+            console.log('⚠️ auth_token not found!');
+          }
+        } catch (e) {
+          console.log('⚠️ Cookie mapping error:', e.message);
+        }
+      } else {
+        console.log('❌ No cached cookies available!');
+      }
+      
+      // X API用の追加ヘッダー
+      headers['x-twitter-active-user'] = 'yes';
+      headers['x-twitter-client-language'] = 'en';
+      headers['x-twitter-auth-type'] = 'OAuth2Session';
+      
+      // GraphQL API用のヘッダー
+      if (targetUrl.includes('graphql') || targetUrl.includes('UserByScreenName')) {
+        headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
+        console.log('🔑 Added GraphQL authorization bearer token');
       }
     } else if (req.headers.cookie) {
       headers['Cookie'] = req.headers.cookie;
@@ -771,20 +823,7 @@ app.post('/proxy/:encodedUrl*', async (req, res) => {
       headers['Authorization'] = req.headers.authorization;
     }
 
-    // X API用の追加ヘッダー
-    if (parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com')) {
-      headers['x-twitter-active-user'] = 'yes';
-      headers['x-twitter-client-language'] = 'en';
-      
-      // ct0トークンを追加（CSRF対策）
-      if (cachedXCookies && Array.isArray(cachedXCookies)) {
-        const ct0Cookie = cachedXCookies.find(c => c.name === 'ct0');
-        if (ct0Cookie) {
-          headers['x-csrf-token'] = ct0Cookie.value;
-          console.log('🔐 Added CSRF token');
-        }
-      }
-    }
+    console.log('📤 Request headers:', Object.keys(headers));
 
     const response = await axios({
       method: 'POST',
@@ -798,6 +837,13 @@ app.post('/proxy/:encodedUrl*', async (req, res) => {
     });
 
     console.log(`📥 POST Response: ${response.status}`);
+    
+    if (response.status === 404) {
+      console.log('❌ 404 Error - Possible causes:');
+      console.log('   - Missing or invalid cookies');
+      console.log('   - Missing CSRF token');
+      console.log('   - Invalid authorization');
+    }
 
     const contentType = response.headers['content-type'] || '';
 
@@ -807,7 +853,7 @@ app.post('/proxy/:encodedUrl*', async (req, res) => {
 
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token, x-twitter-active-user, x-twitter-client-language');
     res.setHeader('Access-Control-Allow-Credentials', 'true');
 
     if (contentType.includes('text/html')) {
