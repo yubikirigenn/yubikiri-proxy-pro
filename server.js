@@ -120,6 +120,27 @@ function rewriteHTML(html, baseUrl) {
     }
   });
 
+  // video source タグの書き換え（動画用）
+  html = html.replace(/<source\s+([^>]*?)src\s*=\s*["']([^"']+)["']([^>]*?)>/gi, (match, before, src, after) => {
+    if (src.startsWith('data:') || src.startsWith('blob:') || isAlreadyProxied(src)) {
+      return match;
+    }
+    
+    let absoluteUrl = src;
+    try {
+      if (src.startsWith('//')) {
+        absoluteUrl = urlObj.protocol + src;
+      } else if (src.startsWith('/')) {
+        absoluteUrl = origin + src;
+      } else if (!src.startsWith('http')) {
+        absoluteUrl = new url.URL(src, baseUrl).href;
+      }
+      return `<source ${before}src="/proxy/${encodeProxyUrl(absoluteUrl)}"${after}>`;
+    } catch (e) {
+      return match;
+    }
+  });
+
   // action書き換え
   html = html.replace(/action\s*=\s*["']([^"']+)["']/gi, (match, action) => {
     if (isAlreadyProxied(action)) {
@@ -164,6 +185,8 @@ function rewriteHTML(html, baseUrl) {
         });
         
         function toAbsoluteUrl(relativeUrl) {
+          if (!relativeUrl) return relativeUrl;
+          
           if (relativeUrl.startsWith('http://') || relativeUrl.startsWith('https://')) {
             return relativeUrl;
           }
@@ -183,9 +206,38 @@ function rewriteHTML(html, baseUrl) {
         
         // 既にプロキシ化済みかチェック
         function isAlreadyProxied(url) {
+          if (!url) return false;
           return url.includes(PROXY_ORIGIN) || 
                  url.startsWith('/proxy/') || 
                  url.includes('/proxy/');
+        }
+        
+        // 動画・メディアURLかチェック
+        function isMediaUrl(url) {
+          if (!url) return false;
+          try {
+            const urlLower = url.toLowerCase();
+            return urlLower.includes('video.twimg.com') ||
+                   urlLower.includes('video-s.twimg.com') ||
+                   urlLower.includes('pbs.twimg.com') ||
+                   urlLower.includes('abs.twimg.com') ||
+                   urlLower.match(/\\.(m3u8|ts|m4s|mp4|webm|jpg|png|gif)($|\\?)/);
+          } catch (e) {
+            return false;
+          }
+        }
+
+        // URL変換用のヘルパー（全てのケースで使用）
+        function proxyUrl(url) {
+          if (!url || typeof url !== 'string') return url;
+          if (isAlreadyProxied(url)) return url;
+          if (url.startsWith('blob:') || url.startsWith('data:')) return url;
+          
+          const absoluteUrl = toAbsoluteUrl(url);
+          if (absoluteUrl.startsWith('http')) {
+            return encodeProxyUrl(absoluteUrl);
+          }
+          return url;
         }
         
         // fetch インターセプト
@@ -194,38 +246,31 @@ function rewriteHTML(html, baseUrl) {
           let url = typeof resource === 'string' ? resource : (resource.url || resource);
           
           // Google関連はブロック
-          if (url.includes('google.com') || url.includes('gstatic.com')) {
-            console.log('[Proxy] Blocked:', url);
+          if (url && (url.includes('google.com') || url.includes('gstatic.com'))) {
             return Promise.reject(new Error('Blocked'));
           }
           
           // blob/dataはそのまま
-          if (url.startsWith('blob:') || url.startsWith('data:')) {
+          if (url && (url.startsWith('blob:') || url.startsWith('data:'))) {
             return originalFetch.call(this, resource, options);
           }
           
           // 既にプロキシ化されているURLはそのまま
           if (isAlreadyProxied(url)) {
-            console.log('[Proxy] Already proxied, passing through:', url);
             return originalFetch.call(this, resource, options);
           }
           
-          const absoluteUrl = toAbsoluteUrl(url);
-          
-          // 外部URLの場合のみプロキシ化
-          if (absoluteUrl.startsWith('http')) {
-            const proxyUrl = encodeProxyUrl(absoluteUrl);
-            console.log('[Proxy] Fetch:', url, '->', proxyUrl);
-            
+          const proxiedUrl = proxyUrl(url);
+          if (proxiedUrl !== url) {
             const newOptions = Object.assign({}, options);
             if (newOptions.mode === 'cors') {
               delete newOptions.mode;
             }
             
             if (typeof resource === 'string') {
-              return originalFetch.call(this, proxyUrl, newOptions);
+              return originalFetch.call(this, proxiedUrl, newOptions);
             } else {
-              return originalFetch.call(this, new Request(proxyUrl, newOptions));
+              return originalFetch.call(this, new Request(proxiedUrl, newOptions));
             }
           }
           
@@ -238,22 +283,16 @@ function rewriteHTML(html, baseUrl) {
           if (typeof url === 'string') {
             // Google関連はブロック
             if (url.includes('google.com') || url.includes('gstatic.com')) {
-              console.log('[Proxy] Blocked XHR:', url);
               throw new Error('Blocked');
             }
             
             // blob/dataはそのまま
             if (!url.startsWith('blob:') && !url.startsWith('data:')) {
-              // 既にプロキシ化されていなければ変換
               if (!isAlreadyProxied(url)) {
-                const absoluteUrl = toAbsoluteUrl(url);
-                if (absoluteUrl.startsWith('http')) {
-                  const proxyUrl = encodeProxyUrl(absoluteUrl);
-                  console.log('[Proxy] XHR:', url, '->', proxyUrl);
-                  return originalOpen.call(this, method, proxyUrl, ...rest);
+                const proxiedUrl = proxyUrl(url);
+                if (proxiedUrl !== url) {
+                  return originalOpen.call(this, method, proxiedUrl, ...rest);
                 }
-              } else {
-                console.log('[Proxy] Already proxied XHR, passing through:', url);
               }
             }
           }
@@ -261,22 +300,96 @@ function rewriteHTML(html, baseUrl) {
           return originalOpen.call(this, method, url, ...rest);
         };
 
+        // HTMLMediaElement (video/audio) のsrc設定をインターセプト
+        const mediaSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
+        if (mediaSrcDescriptor && mediaSrcDescriptor.set) {
+          Object.defineProperty(HTMLMediaElement.prototype, 'src', {
+            set: function(value) {
+              const proxiedValue = proxyUrl(value);
+              console.log('[Proxy] Media src:', value, '->', proxiedValue);
+              return mediaSrcDescriptor.set.call(this, proxiedValue);
+            },
+            get: function() {
+              return mediaSrcDescriptor.get.call(this);
+            }
+          });
+        }
+
+        // Image src のインターセプト
+        const imageSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+        if (imageSrcDescriptor && imageSrcDescriptor.set) {
+          Object.defineProperty(HTMLImageElement.prototype, 'src', {
+            set: function(value) {
+              const proxiedValue = proxyUrl(value);
+              return imageSrcDescriptor.set.call(this, proxiedValue);
+            },
+            get: function() {
+              return imageSrcDescriptor.get.call(this);
+            }
+          });
+        }
+
         // location.href の上書きを防止
         const originalLocationSetter = Object.getOwnPropertyDescriptor(window.Location.prototype, 'href').set;
         Object.defineProperty(window.Location.prototype, 'href', {
           set: function(value) {
             if (isAlreadyProxied(value)) {
-              console.log('[Proxy] Preventing location.href loop:', value);
               return;
             }
-            const absoluteUrl = toAbsoluteUrl(value);
-            const proxyUrl = encodeProxyUrl(absoluteUrl);
-            console.log('[Proxy] Redirecting location.href to:', proxyUrl);
-            originalLocationSetter.call(this, proxyUrl);
+            const proxiedValue = proxyUrl(value);
+            originalLocationSetter.call(this, proxiedValue);
           },
           get: function() {
             return window.location.href;
           }
+        });
+
+        // MutationObserver で動的に追加される要素を監視
+        const observer = new MutationObserver((mutations) => {
+          mutations.forEach((mutation) => {
+            mutation.addedNodes.forEach((node) => {
+              if (node.nodeType === 1) { // Element
+                // img タグ
+                if (node.tagName === 'IMG' && node.src && !isAlreadyProxied(node.src)) {
+                  const proxiedSrc = proxyUrl(node.src);
+                  if (proxiedSrc !== node.src) {
+                    node.src = proxiedSrc;
+                  }
+                }
+                // video/audio タグ
+                if ((node.tagName === 'VIDEO' || node.tagName === 'AUDIO') && node.src && !isAlreadyProxied(node.src)) {
+                  const proxiedSrc = proxyUrl(node.src);
+                  if (proxiedSrc !== node.src) {
+                    node.src = proxiedSrc;
+                  }
+                }
+                // source タグ
+                if (node.tagName === 'SOURCE' && node.src && !isAlreadyProxied(node.src)) {
+                  const proxiedSrc = proxyUrl(node.src);
+                  if (proxiedSrc !== node.src) {
+                    node.src = proxiedSrc;
+                  }
+                }
+                // 子要素も処理
+                const imgs = node.querySelectorAll && node.querySelectorAll('img[src], video[src], audio[src], source[src]');
+                if (imgs) {
+                  imgs.forEach((el) => {
+                    if (el.src && !isAlreadyProxied(el.src)) {
+                      const proxiedSrc = proxyUrl(el.src);
+                      if (proxiedSrc !== el.src) {
+                        el.src = proxiedSrc;
+                      }
+                    }
+                  });
+                }
+              }
+            });
+          });
+        });
+
+        observer.observe(document.documentElement, {
+          childList: true,
+          subtree: true
         });
 
         // エラー抑制
@@ -284,12 +397,18 @@ function rewriteHTML(html, baseUrl) {
         console.error = function(...args) {
           const msg = args.join(' ');
           if (msg.includes('GSI') || msg.includes('google')) return;
+          if (msg.includes('404') && msg.includes('loaders.video')) return; // 動画ローダーエラーを抑制
           return originalError.apply(console, args);
         };
 
-        console.warn = () => {};
+        const originalWarn = console.warn;
+        console.warn = function(...args) {
+          const msg = args.join(' ');
+          if (msg.includes('GSI') || msg.includes('google')) return;
+          return originalWarn.apply(console, args);
+        };
         
-        console.log('[Proxy] Intercept initialized with loop prevention');
+        console.log('[Proxy] Intercept initialized with advanced media handling');
       })();
     </script>
   `;
@@ -553,12 +672,16 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
                           parsedUrl.pathname.includes('graphql');
     
     // 動画・メディアファイルの判定
-    const isMediaFile = parsedUrl.pathname.match(/\.(js|css|json|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|mp4|webm|m3u8|ts|m4s)$/i) ||
+    const isMediaFile = parsedUrl.pathname.match(/\.(js|css|json|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|mp4|webm|m3u8|ts|m4s|mpd)$/i) ||
                         parsedUrl.hostname.includes('video.twimg.com') ||
-                        parsedUrl.hostname.includes('pbs.twimg.com');
+                        parsedUrl.hostname.includes('video-s.twimg.com') ||
+                        parsedUrl.hostname.includes('pbs.twimg.com') ||
+                        parsedUrl.hostname.includes('abs.twimg.com');
     
     // HTMLページかどうかを判定（API・メディアは除外）
     const isHTML = !isApiEndpoint && !isMediaFile;
+
+    console.log(`📊 Type: isHTML=${isHTML}, isAPI=${isApiEndpoint}, isMedia=${isMediaFile}`);
     
     const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
 
@@ -794,6 +917,13 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
       
       if (response.status === 400 || response.status === 404) {
         console.log('❌ Resource Error:', response.status, 'for', targetUrl);
+        
+        // 404の場合は空のレスポンスを返す（エラーページではなく）
+        if (response.status === 404) {
+          res.status(404).send('');
+          return;
+        }
+        
         try {
           const errorBody = response.data.toString('utf-8');
           console.log('Error body:', errorBody.substring(0, 300));
