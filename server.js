@@ -301,48 +301,62 @@ function rewriteHTML(html, baseUrl) {
         };
 
         // HTMLMediaElement (video/audio) のsrc設定をインターセプト
-        const mediaSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
-        if (mediaSrcDescriptor && mediaSrcDescriptor.set) {
-          Object.defineProperty(HTMLMediaElement.prototype, 'src', {
-            set: function(value) {
-              const proxiedValue = proxyUrl(value);
-              console.log('[Proxy] Media src:', value, '->', proxiedValue);
-              return mediaSrcDescriptor.set.call(this, proxiedValue);
-            },
-            get: function() {
-              return mediaSrcDescriptor.get.call(this);
-            }
-          });
+        try {
+          const mediaSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
+          if (mediaSrcDescriptor && mediaSrcDescriptor.set) {
+            Object.defineProperty(HTMLMediaElement.prototype, 'src', {
+              set: function(value) {
+                const proxiedValue = proxyUrl(value);
+                console.log('[Proxy] Media src:', value, '->', proxiedValue);
+                return mediaSrcDescriptor.set.call(this, proxiedValue);
+              },
+              get: function() {
+                return mediaSrcDescriptor.get.call(this);
+              }
+            });
+          }
+        } catch (e) {
+          console.warn('[Proxy] Could not intercept HTMLMediaElement.src:', e.message);
         }
 
         // Image src のインターセプト
-        const imageSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
-        if (imageSrcDescriptor && imageSrcDescriptor.set) {
-          Object.defineProperty(HTMLImageElement.prototype, 'src', {
-            set: function(value) {
-              const proxiedValue = proxyUrl(value);
-              return imageSrcDescriptor.set.call(this, proxiedValue);
-            },
-            get: function() {
-              return imageSrcDescriptor.get.call(this);
-            }
-          });
+        try {
+          const imageSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+          if (imageSrcDescriptor && imageSrcDescriptor.set) {
+            Object.defineProperty(HTMLImageElement.prototype, 'src', {
+              set: function(value) {
+                const proxiedValue = proxyUrl(value);
+                return imageSrcDescriptor.set.call(this, proxiedValue);
+              },
+              get: function() {
+                return imageSrcDescriptor.get.call(this);
+              }
+            });
+          }
+        } catch (e) {
+          console.warn('[Proxy] Could not intercept HTMLImageElement.src:', e.message);
         }
 
         // location.href の上書きを防止
-        const originalLocationSetter = Object.getOwnPropertyDescriptor(window.Location.prototype, 'href').set;
-        Object.defineProperty(window.Location.prototype, 'href', {
-          set: function(value) {
-            if (isAlreadyProxied(value)) {
-              return;
-            }
-            const proxiedValue = proxyUrl(value);
-            originalLocationSetter.call(this, proxiedValue);
-          },
-          get: function() {
-            return window.location.href;
+        try {
+          const locationDescriptor = Object.getOwnPropertyDescriptor(window.Location.prototype, 'href');
+          if (locationDescriptor && locationDescriptor.set) {
+            Object.defineProperty(window.Location.prototype, 'href', {
+              set: function(value) {
+                if (isAlreadyProxied(value)) {
+                  return;
+                }
+                const proxiedValue = proxyUrl(value);
+                locationDescriptor.set.call(this, proxiedValue);
+              },
+              get: function() {
+                return window.location.href;
+              }
+            });
           }
-        });
+        } catch (e) {
+          console.warn('[Proxy] Could not intercept location.href:', e.message);
+        }
 
         // MutationObserver で動的に追加される要素を監視
         const observer = new MutationObserver((mutations) => {
@@ -628,6 +642,128 @@ app.get('/test-decode/:encoded', (req, res) => {
     res.status(400).json({ 
       error: e.message,
       encoded: req.params.encoded
+    });
+  }
+});
+
+// OPTIONS proxy route（CORSプリフライト用）
+app.options('/proxy/:encodedUrl*', async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token, x-twitter-active-user, x-twitter-client-language, x-twitter-auth-type');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  res.status(204).send();
+});
+
+// PUT proxy route（X API用）
+app.put('/proxy/:encodedUrl*', async (req, res) => {
+  try {
+    const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
+    const targetUrl = decodeProxyUrl(encodedUrl);
+
+    console.log('📡 PUT Proxying:', targetUrl);
+
+    const parsedUrl = new url.URL(targetUrl);
+    const isXDomain = parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com');
+    
+    const headers = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'Accept': '*/*',
+      'Content-Type': req.headers['content-type'] || 'application/json',
+      'Accept-Language': 'en-US,en;q=0.9',
+    };
+
+    headers['Origin'] = `${parsedUrl.protocol}//${parsedUrl.host}`;
+    headers['Referer'] = `${parsedUrl.protocol}//${parsedUrl.host}/`;
+
+    // X.com用のCookie処理
+    if (isXDomain) {
+      const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
+      
+      if (hasCookies) {
+        try {
+          let cookieString = cachedXCookies
+            .filter(c => c && c.name && c.value)
+            .map(c => `${c.name}=${c.value}`)
+            .join('; ');
+          
+          if (cookieString) {
+            headers['Cookie'] = cookieString;
+            console.log('🍪 Using cached cookies for PUT');
+          }
+          
+          const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
+          if (ct0Cookie && ct0Cookie.value) {
+            headers['x-csrf-token'] = ct0Cookie.value;
+            console.log('🔐 Added x-csrf-token for PUT');
+          }
+        } catch (e) {
+          console.log('⚠️ Cookie error:', e.message);
+        }
+      }
+      
+      headers['x-twitter-active-user'] = 'yes';
+      headers['x-twitter-client-language'] = 'en';
+      headers['x-twitter-auth-type'] = 'OAuth2Session';
+      
+      if (targetUrl.includes('graphql') || targetUrl.includes('strato')) {
+        headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
+        console.log('🔑 Added bearer token for PUT');
+      }
+    }
+
+    if (req.headers.authorization) {
+      headers['Authorization'] = req.headers.authorization;
+    }
+
+    const response = await axios({
+      method: 'PUT',
+      url: targetUrl,
+      headers: headers,
+      data: req.body,
+      responseType: 'arraybuffer',
+      maxRedirects: 5,
+      validateStatus: () => true,
+      timeout: 30000
+    });
+
+    console.log(`📥 PUT Response: ${response.status}`);
+    
+    if (response.status === 400 || response.status === 403 || response.status === 404) {
+      console.log('❌ PUT API Error:', response.status);
+      try {
+        const errorBody = response.data.toString('utf-8');
+        console.log('Error body:', errorBody.substring(0, 300));
+      } catch (e) {
+        console.log('Could not parse error body');
+      }
+    }
+
+    const contentType = response.headers['content-type'] || '';
+
+    if (response.headers['set-cookie']) {
+      res.setHeader('Set-Cookie', response.headers['set-cookie']);
+    }
+
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token, x-twitter-active-user, x-twitter-client-language');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+
+    if (contentType.includes('application/json')) {
+      res.setHeader('Content-Type', contentType);
+      res.send(response.data);
+    } else {
+      res.setHeader('Content-Type', contentType);
+      res.send(response.data);
+    }
+
+  } catch (error) {
+    console.error('❌ PUT Proxy error:', error.message);
+    res.status(500).json({ 
+      error: error.message,
+      url: req.params.encodedUrl
     });
   }
 });
