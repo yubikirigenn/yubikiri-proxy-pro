@@ -337,17 +337,41 @@ function rewriteHTML(html, baseUrl) {
           console.warn('[Proxy] Could not intercept HTMLImageElement.src:', e.message);
         }
 
-        // location.href の上書きを防止
+        // location.href の上書きを防止（強化版）
         try {
           const locationDescriptor = Object.getOwnPropertyDescriptor(window.Location.prototype, 'href');
           if (locationDescriptor && locationDescriptor.set) {
             Object.defineProperty(window.Location.prototype, 'href', {
               set: function(value) {
-                if (isAlreadyProxied(value)) {
+                console.log('[Proxy] location.href set attempted:', value);
+                
+                if (!value || typeof value !== 'string') {
                   return;
                 }
-                const proxiedValue = proxyUrl(value);
-                locationDescriptor.set.call(this, proxiedValue);
+                
+                // 既にプロキシ化されている場合はそのまま
+                if (isAlreadyProxied(value)) {
+                  console.log('[Proxy] Already proxied, allowing:', value);
+                  return locationDescriptor.set.call(this, value);
+                }
+                
+                // 相対パスやハッシュの場合
+                if (value.startsWith('#') || value.startsWith('?')) {
+                  console.log('[Proxy] Hash/query change, allowing:', value);
+                  return locationDescriptor.set.call(this, value);
+                }
+                
+                // x.com内の遷移の場合のみプロキシ化
+                const absoluteValue = toAbsoluteUrl(value);
+                if (absoluteValue.includes('x.com') || absoluteValue.includes('twitter.com')) {
+                  const proxiedValue = proxyUrl(absoluteValue);
+                  console.log('[Proxy] Redirecting to proxied URL:', proxiedValue);
+                  return locationDescriptor.set.call(this, proxiedValue);
+                } else {
+                  // x.com以外への遷移は許可しない（セキュリティ）
+                  console.warn('[Proxy] Blocked external redirect to:', value);
+                  return;
+                }
               },
               get: function() {
                 return window.location.href;
@@ -356,6 +380,109 @@ function rewriteHTML(html, baseUrl) {
           }
         } catch (e) {
           console.warn('[Proxy] Could not intercept location.href:', e.message);
+        }
+
+        // window.location.replace も監視
+        try {
+          const originalReplace = window.location.replace;
+          window.location.replace = function(url) {
+            console.log('[Proxy] location.replace called:', url);
+            
+            if (!url || typeof url !== 'string') {
+              return originalReplace.call(this, url);
+            }
+            
+            if (isAlreadyProxied(url)) {
+              return originalReplace.call(this, url);
+            }
+            
+            const absoluteUrl = toAbsoluteUrl(url);
+            if (absoluteUrl.includes('x.com') || absoluteUrl.includes('twitter.com')) {
+              const proxiedUrl = proxyUrl(absoluteUrl);
+              console.log('[Proxy] Redirecting replace to:', proxiedUrl);
+              return originalReplace.call(this, proxiedUrl);
+            } else {
+              console.warn('[Proxy] Blocked external replace to:', url);
+              return;
+            }
+          };
+        } catch (e) {
+          console.warn('[Proxy] Could not intercept location.replace:', e.message);
+        }
+
+        // window.location.assign も監視
+        try {
+          const originalAssign = window.location.assign;
+          window.location.assign = function(url) {
+            console.log('[Proxy] location.assign called:', url);
+            
+            if (!url || typeof url !== 'string') {
+              return originalAssign.call(this, url);
+            }
+            
+            if (isAlreadyProxied(url)) {
+              return originalAssign.call(this, url);
+            }
+            
+            const absoluteUrl = toAbsoluteUrl(url);
+            if (absoluteUrl.includes('x.com') || absoluteUrl.includes('twitter.com')) {
+              const proxiedUrl = proxyUrl(absoluteUrl);
+              console.log('[Proxy] Redirecting assign to:', proxiedUrl);
+              return originalAssign.call(this, proxiedUrl);
+            } else {
+              console.warn('[Proxy] Blocked external assign to:', url);
+              return;
+            }
+          };
+        } catch (e) {
+          console.warn('[Proxy] Could not intercept location.assign:', e.message);
+        }
+
+        // History API の監視（SPA遷移）
+        try {
+          const originalPushState = window.history.pushState;
+          window.history.pushState = function(state, title, url) {
+            if (url) {
+              console.log('[Proxy] pushState called:', url);
+              
+              // 相対URLまたはハッシュはそのまま
+              if (typeof url === 'string' && (url.startsWith('/') || url.startsWith('#') || url.startsWith('?'))) {
+                return originalPushState.call(this, state, title, url);
+              }
+              
+              // 絶対URLの場合はプロキシ化を確認
+              if (typeof url === 'string' && !isAlreadyProxied(url) && url.startsWith('http')) {
+                const proxiedUrl = proxyUrl(url);
+                console.log('[Proxy] pushState proxied:', proxiedUrl);
+                return originalPushState.call(this, state, title, proxiedUrl);
+              }
+            }
+            
+            return originalPushState.call(this, state, title, url);
+          };
+
+          const originalReplaceState = window.history.replaceState;
+          window.history.replaceState = function(state, title, url) {
+            if (url) {
+              console.log('[Proxy] replaceState called:', url);
+              
+              // 相対URLまたはハッシュはそのまま
+              if (typeof url === 'string' && (url.startsWith('/') || url.startsWith('#') || url.startsWith('?'))) {
+                return originalReplaceState.call(this, state, title, url);
+              }
+              
+              // 絶対URLの場合はプロキシ化を確認
+              if (typeof url === 'string' && !isAlreadyProxied(url) && url.startsWith('http')) {
+                const proxiedUrl = proxyUrl(url);
+                console.log('[Proxy] replaceState proxied:', proxiedUrl);
+                return originalReplaceState.call(this, state, title, proxiedUrl);
+              }
+            }
+            
+            return originalReplaceState.call(this, state, title, url);
+          };
+        } catch (e) {
+          console.warn('[Proxy] Could not intercept History API:', e.message);
         }
 
         // MutationObserver で動的に追加される要素を監視
@@ -421,8 +548,46 @@ function rewriteHTML(html, baseUrl) {
           if (msg.includes('GSI') || msg.includes('google')) return;
           return originalWarn.apply(console, args);
         };
+
+        // 認証エラーの監視（X.comがリダイレクトする前にキャッチ）
+        let authErrorCount = 0;
+        const originalXHRSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.send = function(...args) {
+          const xhr = this;
+          const originalOnLoad = xhr.onload;
+          
+          xhr.onload = function() {
+            try {
+              if (xhr.status === 401 || xhr.status === 403) {
+                authErrorCount++;
+                console.error('[Proxy] Auth error detected:', xhr.status, xhr.responseURL);
+                
+                if (authErrorCount > 5) {
+                  console.error('[Proxy] Too many auth errors, session may be expired');
+                  
+                  // ユーザーに通知
+                  if (!document.getElementById('proxy-auth-warning')) {
+                    const warning = document.createElement('div');
+                    warning.id = 'proxy-auth-warning';
+                    warning.style.cssText = 'position:fixed;top:20px;right:20px;background:rgba(255,87,87,0.95);color:white;padding:20px;border-radius:8px;z-index:99999;max-width:300px;box-shadow:0 4px 12px rgba(0,0,0,0.3);';
+                    warning.innerHTML = '<strong>⚠️ セッション警告</strong><br><br>認証エラーが複数発生しています。<br>Cookieが期限切れの可能性があります。<br><br><a href="/x-cookie-helper.html" style="color:#fff;text-decoration:underline;">Cookieを再注入</a>';
+                    document.body.appendChild(warning);
+                    
+                    setTimeout(() => warning.remove(), 10000);
+                  }
+                }
+              }
+            } catch (e) {}
+            
+            if (originalOnLoad) {
+              return originalOnLoad.apply(this, arguments);
+            }
+          };
+          
+          return originalXHRSend.apply(this, args);
+        };
         
-        console.log('[Proxy] Intercept initialized with advanced media handling');
+        console.log('[Proxy] Intercept initialized with advanced media handling and navigation protection');
       })();
     </script>
   `;
