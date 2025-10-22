@@ -552,9 +552,13 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
                           parsedUrl.pathname.includes('.json') ||
                           parsedUrl.pathname.includes('graphql');
     
-    // HTMLページかどうかを判定（APIは除外）
-    const isHTML = !isApiEndpoint && 
-                   !parsedUrl.pathname.match(/\.(js|css|json|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|mp4|webm)$/i);
+    // 動画・メディアファイルの判定
+    const isMediaFile = parsedUrl.pathname.match(/\.(js|css|json|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|mp4|webm|m3u8|ts|m4s)$/i) ||
+                        parsedUrl.hostname.includes('video.twimg.com') ||
+                        parsedUrl.hostname.includes('pbs.twimg.com');
+    
+    // HTMLページかどうかを判定（API・メディアは除外）
+    const isHTML = !isApiEndpoint && !isMediaFile;
     
     const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
 
@@ -657,6 +661,16 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
 
       } catch (navError) {
         console.error('❌ Navigation error:', navError.message);
+        
+        // abortedエラーの場合は無視（ページ遷移によるキャンセル）
+        if (navError.message.includes('aborted') || navError.message.includes('ERR_ABORTED')) {
+          console.log('⚠️ Request aborted (likely page navigation), returning empty response');
+          res.status(204).send(); // No Content
+          if (!useXLoginPage && page) {
+            await page.close().catch(() => {});
+          }
+          return;
+        }
         
         // エラーページを表示
         res.status(500).send(`
@@ -777,6 +791,16 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
       });
 
       console.log(`📥 Resource loaded: ${response.status}`);
+      
+      if (response.status === 400 || response.status === 404) {
+        console.log('❌ Resource Error:', response.status, 'for', targetUrl);
+        try {
+          const errorBody = response.data.toString('utf-8');
+          console.log('Error body:', errorBody.substring(0, 300));
+        } catch (e) {
+          console.log('Could not parse error body');
+        }
+      }
 
       const contentType = response.headers['content-type'] || 'application/octet-stream';
       res.setHeader('Content-Type', contentType);
@@ -786,6 +810,14 @@ app.get('/proxy/:encodedUrl*', async (req, res) => {
 
   } catch (error) {
     console.error('❌ GET Proxy error:', error.message);
+    
+    // abortedエラーは無視
+    if (error.message.includes('aborted') || error.message.includes('ERR_ABORTED')) {
+      console.log('⚠️ Request aborted, returning 204');
+      res.status(204).send();
+      return;
+    }
+    
     res.status(500).json({ 
       error: error.message,
       url: req.params.encodedUrl
@@ -888,11 +920,15 @@ app.post('/proxy/:encodedUrl*', async (req, res) => {
 
     console.log(`📥 POST Response: ${response.status}`);
     
-    if (response.status === 404) {
-      console.log('❌ 404 Error - Possible causes:');
-      console.log('   - Missing or invalid cookies');
-      console.log('   - Missing CSRF token');
-      console.log('   - Invalid authorization');
+    if (response.status === 400 || response.status === 404) {
+      console.log('❌ API Error:', response.status);
+      console.log('Response headers:', response.headers);
+      try {
+        const errorBody = response.data.toString('utf-8');
+        console.log('Error body:', errorBody.substring(0, 500));
+      } catch (e) {
+        console.log('Could not parse error body');
+      }
     }
 
     const contentType = response.headers['content-type'] || '';
