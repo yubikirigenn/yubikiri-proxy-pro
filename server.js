@@ -1037,8 +1037,9 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
       
       let page;
       const useXLoginPage = isXDomain && xLoginPage && hasCookies;
-      
-      let page;
+
+      // xLoginPageが使えない場合は新しいページを作成
+      let newPage;
       
       try {
         if (useXLoginPageShared) {
@@ -1202,8 +1203,8 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
         `);
         
         // 新しく作成したページをクローズ
-        if (page && page !== xLoginPage) {
-          await page.close().catch(() => {});
+        if (newPage) {
+          await newPage.close().catch(() => {});
         }
       }
     } else {
