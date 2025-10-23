@@ -16,6 +16,8 @@ let browser;
 let puppeteer;
 let xLoginPage = null;
 let cachedXCookies = null;
+let xLoginPageBusy = false; // 🆕 ページ使用中フラグ
+const xLoginPageQueue = []; // 🆕 待機キュー
 
 const COOKIE_FILE = path.join(__dirname, '.x-cookies.json');
 
@@ -785,6 +787,34 @@ async function initXLoginPage() {
   return page;
 }
 
+// 🆕 xLoginPageの排他制御付き使用
+async function useXLoginPage(callback) {
+  // ページが使用中の場合は待機
+  if (xLoginPageBusy) {
+    console.log('⏳ xLoginPage is busy, queuing request...');
+    return new Promise((resolve) => {
+      xLoginPageQueue.push(async () => {
+        const result = await callback();
+        resolve(result);
+      });
+    });
+  }
+
+  xLoginPageBusy = true;
+  try {
+    const result = await callback();
+    return result;
+  } finally {
+    xLoginPageBusy = false;
+    
+    // キューに待機中のリクエストがあれば処理
+    if (xLoginPageQueue.length > 0) {
+      const nextRequest = xLoginPageQueue.shift();
+      setImmediate(nextRequest);
+    }
+  }
+}
+
 // Initialize xLoginPage with cached cookies
 (async () => {
   if (cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0) {
@@ -1007,11 +1037,11 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
       
       let page;
       const useXLoginPage = isXDomain && xLoginPage && hasCookies;
-
+      
       try {
-        if (useXLoginPage) {
-          console.log('♻️  Reusing xLoginPage with cached cookies');
-          page = xLoginPage;
+        if (useXLoginPageShared) {
+          // 上記のキューシステムで処理済み
+          return;
         } else {
           console.log('🆕 Creating new page');
           const browserInstance = await initBrowser();
@@ -1088,7 +1118,7 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
         console.log(`✅ Page loaded successfully (${htmlContent.length} bytes)`);
 
         // 新しく作成したページをクローズ（xLoginPageは維持）
-        if (!useXLoginPage && page) {
+        if (page && page !== xLoginPage) {
           await page.close();
         }
 
@@ -1170,7 +1200,7 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
         `);
         
         // 新しく作成したページをクローズ
-        if (!useXLoginPage && page) {
+        if (page && page !== xLoginPage) {
           await page.close().catch(() => {});
         }
       }
