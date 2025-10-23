@@ -1035,11 +1035,11 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
     if (isHTML) {
       console.log('🌐 Using Puppeteer for HTML page');
       
-      let page;
+      let newpage;
       const useXLoginPage = isXDomain && xLoginPage && hasCookies;
 
       // xLoginPageが使えない場合は新しいページを作成
-      let newPage;
+      let page;
       
       try {
         if (useXLoginPageShared) {
