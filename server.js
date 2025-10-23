@@ -66,6 +66,9 @@ function decodeProxyUrl(encoded) {
   return Buffer.from(base64, 'base64').toString('utf-8');
 }
 
+// プロキシパスを変更（フィルタリング回避）
+const PROXY_PATH = '/c/'; // "content"の略 - "proxy"という単語を避ける
+
 function rewriteHTML(html, baseUrl) {
   const urlObj = new url.URL(baseUrl);
   const origin = `${urlObj.protocol}//${urlObj.host}`;
@@ -168,8 +171,9 @@ function rewriteHTML(html, baseUrl) {
       (function() {
         const PROXY_ORIGIN = '${proxyOrigin}';
         const TARGET_ORIGIN = '${origin}';
+        const PROXY_PATH = '${PROXY_PATH}';
         
-        console.log('[Proxy] Initializing for', TARGET_ORIGIN);
+        console.log('[Content] Initializing for', TARGET_ORIGIN);
         
         // Google無効化
         Object.defineProperty(window, 'google', {
@@ -201,15 +205,15 @@ function rewriteHTML(html, baseUrl) {
         
         function encodeProxyUrl(url) {
           const base64 = btoa(url).replace(/\\+/g, '-').replace(/\\\//g, '_').replace(/=/g, '');
-          return PROXY_ORIGIN + '/proxy/' + base64;
+          return PROXY_ORIGIN + PROXY_PATH + base64;
         }
         
         // 既にプロキシ化済みかチェック
         function isAlreadyProxied(url) {
           if (!url) return false;
           return url.includes(PROXY_ORIGIN) || 
-                 url.startsWith('/proxy/') || 
-                 url.includes('/proxy/');
+                 url.includes(PROXY_PATH) ||
+                 url.startsWith(PROXY_PATH);
         }
         
         // 動画・メディアURLかチェック
@@ -438,22 +442,24 @@ function rewriteHTML(html, baseUrl) {
           console.warn('[Proxy] Could not intercept location.assign:', e.message);
         }
 
-        // History API の監視（SPA遷移）
+        // History API の監視（SPA遷移）- 詳細ログ付き
         try {
           const originalPushState = window.history.pushState;
           window.history.pushState = function(state, title, url) {
             if (url) {
-              console.log('[Proxy] pushState called:', url);
+              console.log('[Content] 📍 pushState called:', url);
+              console.log('[Content] Current URL:', window.location.href);
               
               // 相対URLまたはハッシュはそのまま
               if (typeof url === 'string' && (url.startsWith('/') || url.startsWith('#') || url.startsWith('?'))) {
+                console.log('[Content] ✅ Relative URL, allowing');
                 return originalPushState.call(this, state, title, url);
               }
               
               // 絶対URLの場合はプロキシ化を確認
               if (typeof url === 'string' && !isAlreadyProxied(url) && url.startsWith('http')) {
                 const proxiedUrl = proxyUrl(url);
-                console.log('[Proxy] pushState proxied:', proxiedUrl);
+                console.log('[Content] ✅ pushState proxied:', proxiedUrl);
                 return originalPushState.call(this, state, title, proxiedUrl);
               }
             }
@@ -464,17 +470,19 @@ function rewriteHTML(html, baseUrl) {
           const originalReplaceState = window.history.replaceState;
           window.history.replaceState = function(state, title, url) {
             if (url) {
-              console.log('[Proxy] replaceState called:', url);
+              console.log('[Content] 📍 replaceState called:', url);
+              console.log('[Content] Current URL:', window.location.href);
               
               // 相対URLまたはハッシュはそのまま
               if (typeof url === 'string' && (url.startsWith('/') || url.startsWith('#') || url.startsWith('?'))) {
+                console.log('[Content] ✅ Relative URL, allowing');
                 return originalReplaceState.call(this, state, title, url);
               }
               
               // 絶対URLの場合はプロキシ化を確認
               if (typeof url === 'string' && !isAlreadyProxied(url) && url.startsWith('http')) {
                 const proxiedUrl = proxyUrl(url);
-                console.log('[Proxy] replaceState proxied:', proxiedUrl);
+                console.log('[Content] ✅ replaceState proxied:', proxiedUrl);
                 return originalReplaceState.call(this, state, title, proxiedUrl);
               }
             }
@@ -482,8 +490,15 @@ function rewriteHTML(html, baseUrl) {
             return originalReplaceState.call(this, state, title, url);
           };
         } catch (e) {
-          console.warn('[Proxy] Could not intercept History API:', e.message);
+          console.warn('[Content] Could not intercept History API:', e.message);
         }
+
+        // popstate イベントの監視（ブラウザの戻る/進む）
+        window.addEventListener('popstate', function(event) {
+          console.log('[Content] 🔙 popstate event fired');
+          console.log('[Content] Current URL:', window.location.href);
+          console.log('[Content] State:', event.state);
+        });
 
         // MutationObserver で動的に追加される要素を監視
         const observer = new MutationObserver((mutations) => {
@@ -587,7 +602,7 @@ function rewriteHTML(html, baseUrl) {
           return originalXHRSend.apply(this, args);
         };
         
-        console.log('[Proxy] Intercept initialized with advanced media handling and navigation protection');
+        console.log('[Content] Intercept initialized with advanced media handling and navigation protection');
       })();
     </script>
   `;
@@ -812,7 +827,7 @@ app.get('/test-decode/:encoded', (req, res) => {
 });
 
 // OPTIONS proxy route（CORSプリフライト用）
-app.options('/proxy/:encodedUrl*', async (req, res) => {
+app.options(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token, x-twitter-active-user, x-twitter-client-language, x-twitter-auth-type');
@@ -822,7 +837,7 @@ app.options('/proxy/:encodedUrl*', async (req, res) => {
 });
 
 // PUT proxy route（X API用）
-app.put('/proxy/:encodedUrl*', async (req, res) => {
+app.put(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
   try {
     const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
     const targetUrl = decodeProxyUrl(encodedUrl);
@@ -957,7 +972,7 @@ app.get('/test-cookies', (req, res) => {
 // ===== 8. PROXY ROUTES (CRITICAL: GET route added) =====
 
 // 🔴 CRITICAL: GET proxy route with Puppeteer
-app.get('/proxy/:encodedUrl*', async (req, res) => {
+app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
   try {
     const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
     const targetUrl = decodeProxyUrl(encodedUrl);
@@ -1408,7 +1423,7 @@ app.post('/api/proxy', async (req, res) => {
     const encodedUrl = encodeProxyUrl(url);
     res.json({
       success: true,
-      redirectUrl: `/proxy/${encodedUrl}`
+      redirectUrl: `${PROXY_PATH}${encodedUrl}`
     });
 
   } catch (error) {
