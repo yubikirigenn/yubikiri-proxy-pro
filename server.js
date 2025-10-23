@@ -1038,6 +1038,8 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
       let page;
       const useXLoginPage = isXDomain && xLoginPage && hasCookies;
       
+      let page;
+      
       try {
         if (useXLoginPageShared) {
           // 上記のキューシステムで処理済み
