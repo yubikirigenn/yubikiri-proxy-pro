@@ -71,7 +71,7 @@ function decodeProxyUrl(encoded) {
 }
 
 // プロキシパスを変更（フィルタリング回避）
-const PROXY_PATH = '/c/'; // "content"の略 - "proxy"という単語を避ける
+const PROXY_PATH = '/proxy/'; // 標準的なプロキシパス
 
 function rewriteHTML(html, baseUrl) {
   const urlObj = new url.URL(baseUrl);
@@ -1221,7 +1221,7 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
 });
 
 // POST proxy route（X API対応強化版）
-app.post('/proxy/:encodedUrl*', async (req, res) => {
+app.post(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
   try {
     const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
     const targetUrl = decodeProxyUrl(encodedUrl);
