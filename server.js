@@ -56,7 +56,9 @@ if (cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
-app.use(express.static('public'));
+
+// 🔴 CRITICAL FIX: 静的ファイルを後で提供（API routesの後）
+// app.use(express.static('public')); // ← ここでは使わない
 
 // ===== 5. UTILITY FUNCTIONS =====
 function encodeProxyUrl(targetUrl) {
@@ -856,128 +858,6 @@ app.get('/test-decode/:encoded', (req, res) => {
   }
 });
 
-// OPTIONS proxy route（CORSプリフライト用）
-app.options(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token, x-twitter-active-user, x-twitter-client-language, x-twitter-auth-type');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  res.setHeader('Access-Control-Max-Age', '86400');
-  res.status(204).send();
-});
-
-// PUT proxy route（X API用）
-app.put(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
-  try {
-    const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
-    const targetUrl = decodeProxyUrl(encodedUrl);
-
-    console.log('📡 PUT Proxying:', targetUrl);
-
-    const parsedUrl = new url.URL(targetUrl);
-    const isXDomain = parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com');
-    
-    const headers = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      'Accept': '*/*',
-      'Content-Type': req.headers['content-type'] || 'application/json',
-      'Accept-Language': 'en-US,en;q=0.9',
-    };
-
-    headers['Origin'] = `${parsedUrl.protocol}//${parsedUrl.host}`;
-    headers['Referer'] = `${parsedUrl.protocol}//${parsedUrl.host}/`;
-
-    // X.com用のCookie処理
-    if (isXDomain) {
-      const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
-      
-      if (hasCookies) {
-        try {
-          let cookieString = cachedXCookies
-            .filter(c => c && c.name && c.value)
-            .map(c => `${c.name}=${c.value}`)
-            .join('; ');
-          
-          if (cookieString) {
-            headers['Cookie'] = cookieString;
-            console.log('🍪 Using cached cookies for PUT');
-          }
-          
-          const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
-          if (ct0Cookie && ct0Cookie.value) {
-            headers['x-csrf-token'] = ct0Cookie.value;
-            console.log('🔐 Added x-csrf-token for PUT');
-          }
-        } catch (e) {
-          console.log('⚠️ Cookie error:', e.message);
-        }
-      }
-      
-      headers['x-twitter-active-user'] = 'yes';
-      headers['x-twitter-client-language'] = 'en';
-      headers['x-twitter-auth-type'] = 'OAuth2Session';
-      
-      if (targetUrl.includes('graphql') || targetUrl.includes('strato')) {
-        headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
-        console.log('🔑 Added bearer token for PUT');
-      }
-    }
-
-    if (req.headers.authorization) {
-      headers['Authorization'] = req.headers.authorization;
-    }
-
-    const response = await axios({
-      method: 'PUT',
-      url: targetUrl,
-      headers: headers,
-      data: req.body,
-      responseType: 'arraybuffer',
-      maxRedirects: 5,
-      validateStatus: () => true,
-      timeout: 30000
-    });
-
-    console.log(`📥 PUT Response: ${response.status}`);
-    
-    if (response.status === 400 || response.status === 403 || response.status === 404) {
-      console.log('❌ PUT API Error:', response.status);
-      try {
-        const errorBody = response.data.toString('utf-8');
-        console.log('Error body:', errorBody.substring(0, 300));
-      } catch (e) {
-        console.log('Could not parse error body');
-      }
-    }
-
-    const contentType = response.headers['content-type'] || '';
-
-    if (response.headers['set-cookie']) {
-      res.setHeader('Set-Cookie', response.headers['set-cookie']);
-    }
-
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token, x-twitter-active-user, x-twitter-client-language');
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-
-    if (contentType.includes('application/json')) {
-      res.setHeader('Content-Type', contentType);
-      res.send(response.data);
-    } else {
-      res.setHeader('Content-Type', contentType);
-      res.send(response.data);
-    }
-
-  } catch (error) {
-    console.error('❌ PUT Proxy error:', error.message);
-    res.status(500).json({ 
-      error: error.message,
-      url: req.params.encodedUrl
-    });
-  }
-});
-
 app.get('/test-cookies', (req, res) => {
   const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
   
@@ -999,7 +879,17 @@ app.get('/test-cookies', (req, res) => {
   });
 });
 
-// ===== 8. PROXY ROUTES (CRITICAL: GET route added) =====
+// ===== 8. PROXY ROUTES =====
+
+// OPTIONS proxy route（CORSプリフライト用）
+app.options(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token, x-twitter-active-user, x-twitter-client-language, x-twitter-auth-type');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  res.status(204).send();
+});
 
 // 🔴 CRITICAL: GET proxy route with Puppeteer
 app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
@@ -1035,16 +925,42 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
     if (isHTML) {
       console.log('🌐 Using Puppeteer for HTML page');
       
-      let newpage;
-      const useXLoginPage = isXDomain && xLoginPage && hasCookies;
-
-      // xLoginPageが使えない場合は新しいページを作成
       let page;
-      
+      const useXLoginPageShared = isXDomain && xLoginPage && hasCookies;
+
       try {
         if (useXLoginPageShared) {
-          // 上記のキューシステムで処理済み
-          return;
+          // xLoginPageを使用（キューイングシステムで処理）
+          console.log('♻️ Using shared xLoginPage');
+          
+          const htmlContent = await useXLoginPage(async () => {
+            await xLoginPage.goto(targetUrl, {
+              waitUntil: 'domcontentloaded',
+              timeout: 60000
+            }).catch(err => {
+              console.log('⚠️ Navigation timeout (continuing):', err.message);
+            });
+            
+            if (isXDomain) {
+              await Promise.race([
+                xLoginPage.waitForSelector('div[data-testid="primaryColumn"]', { timeout: 10000 }),
+                xLoginPage.waitForSelector('main[role="main"]', { timeout: 10000 }),
+                new Promise(resolve => setTimeout(resolve, 10000))
+              ]).catch(() => {});
+              
+              await new Promise(resolve => setTimeout(resolve, 3000));
+            } else {
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+            
+            return await xLoginPage.content();
+          });
+          
+          const rewrittenHTML = rewriteHTML(htmlContent, targetUrl);
+          res.setHeader('Content-Type', 'text/html; charset=utf-8');
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          return res.send(rewrittenHTML);
+          
         } else {
           console.log('🆕 Creating new page');
           const browserInstance = await initBrowser();
@@ -1138,7 +1054,7 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
         if (navError.message.includes('aborted') || navError.message.includes('ERR_ABORTED')) {
           console.log('⚠️ Request aborted (likely page navigation), returning empty response');
           res.status(204).send(); // No Content
-          if (!useXLoginPage && page) {
+          if (!useXLoginPageShared && page) {
             await page.close().catch(() => {});
           }
           return;
@@ -1203,8 +1119,8 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
         `);
         
         // 新しく作成したページをクローズ
-        if (newPage) {
-          await newPage.close().catch(() => {});
+        if (page && page !== xLoginPage) {
+          await page.close().catch(() => {});
         }
       }
     } else {
@@ -1444,9 +1360,124 @@ app.post('/proxy/:encodedUrl*', async (req, res) => {
   }
 });
 
+// PUT proxy route（X API用）
+app.put(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
+  try {
+    const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
+    const targetUrl = decodeProxyUrl(encodedUrl);
+
+    console.log('📡 PUT Proxying:', targetUrl);
+
+    const parsedUrl = new url.URL(targetUrl);
+    const isXDomain = parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com');
+    
+    const headers = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'Accept': '*/*',
+      'Content-Type': req.headers['content-type'] || 'application/json',
+      'Accept-Language': 'en-US,en;q=0.9',
+    };
+
+    headers['Origin'] = `${parsedUrl.protocol}//${parsedUrl.host}`;
+    headers['Referer'] = `${parsedUrl.protocol}//${parsedUrl.host}/`;
+
+    // X.com用のCookie処理
+    if (isXDomain) {
+      const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
+      
+      if (hasCookies) {
+        try {
+          let cookieString = cachedXCookies
+            .filter(c => c && c.name && c.value)
+            .map(c => `${c.name}=${c.value}`)
+            .join('; ');
+          
+          if (cookieString) {
+            headers['Cookie'] = cookieString;
+            console.log('🍪 Using cached cookies for PUT');
+          }
+          
+          const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
+          if (ct0Cookie && ct0Cookie.value) {
+            headers['x-csrf-token'] = ct0Cookie.value;
+            console.log('🔐 Added x-csrf-token for PUT');
+          }
+        } catch (e) {
+          console.log('⚠️ Cookie error:', e.message);
+        }
+      }
+      
+      headers['x-twitter-active-user'] = 'yes';
+      headers['x-twitter-client-language'] = 'en';
+      headers['x-twitter-auth-type'] = 'OAuth2Session';
+      
+      if (targetUrl.includes('graphql') || targetUrl.includes('strato')) {
+        headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
+        console.log('🔑 Added bearer token for PUT');
+      }
+    }
+
+    if (req.headers.authorization) {
+      headers['Authorization'] = req.headers.authorization;
+    }
+
+    const response = await axios({
+      method: 'PUT',
+      url: targetUrl,
+      headers: headers,
+      data: req.body,
+      responseType: 'arraybuffer',
+      maxRedirects: 5,
+      validateStatus: () => true,
+      timeout: 30000
+    });
+
+    console.log(`📥 PUT Response: ${response.status}`);
+    
+    if (response.status === 400 || response.status === 403 || response.status === 404) {
+      console.log('❌ PUT API Error:', response.status);
+      try {
+        const errorBody = response.data.toString('utf-8');
+        console.log('Error body:', errorBody.substring(0, 300));
+      } catch (e) {
+        console.log('Could not parse error body');
+      }
+    }
+
+    const contentType = response.headers['content-type'] || '';
+
+    if (response.headers['set-cookie']) {
+      res.setHeader('Set-Cookie', response.headers['set-cookie']);
+    }
+
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token, x-twitter-active-user, x-twitter-client-language');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+
+    if (contentType.includes('application/json')) {
+      res.setHeader('Content-Type', contentType);
+      res.send(response.data);
+    } else {
+      res.setHeader('Content-Type', contentType);
+      res.send(response.data);
+    }
+
+  } catch (error) {
+    console.error('❌ PUT Proxy error:', error.message);
+    res.status(500).json({ 
+      error: error.message,
+      url: req.params.encodedUrl
+    });
+  }
+});
+
 // ===== 9. API ROUTES =====
 
 app.post('/api/proxy', async (req, res) => {
+  console.log('🔵 [API] /api/proxy called');
+  console.log('🔵 [API] Request body:', req.body);
+  
   try {
     const { url } = req.body;
     if (!url) {
@@ -1747,9 +1778,33 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
-// ===== 10. ROOT ROUTE (must be last) =====
+// ===== 10. STATIC FILES & ROOT ROUTE =====
+
+// 🔴 CRITICAL FIX: 静的ファイルをAPI routesの後に配置
+app.use(express.static('public'));
+
+// 明示的な静的ファイルルート
+app.get('/x-cookie-helper.html', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'x-cookie-helper.html'));
+});
+
+app.get('/x-login-test.html', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'x-login-test.html'));
+});
+
+// ルートパス（最後に配置）
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// 404エラーハンドラー（すべてのルートの最後）
+app.use((req, res) => {
+  console.log('❌ 404 - Route not found:', req.method, req.path);
+  res.status(404).json({ 
+    error: 'Route not found',
+    path: req.path,
+    method: req.method
+  });
 });
 
 // ===== 11. TEST HELPER FUNCTION =====
@@ -1836,7 +1891,7 @@ async function testXPageAccess(page) {
 // ===== 12. SERVER START =====
 app.listen(PORT, () => {
   console.log(`🚀 Yubikiri Proxy Pro running on port ${PORT}`);
-  console.log(`📍 Environment: ${process.env.RENDER ? 'Render' : 'Local'}`);
+  console.log(`🔍 Environment: ${process.env.RENDER ? 'Render' : 'Local'}`);
   console.log(`🍪 Cached cookies: ${cachedXCookies ? cachedXCookies.length : 0}`);
 });
 
