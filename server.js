@@ -11,7 +11,6 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ===== 変数宣言 =====
 let browser;
 let puppeteer;
 let xLoginPage = null;
@@ -45,7 +44,6 @@ function loadCookiesFromFile() {
   return null;
 }
 
-// 起動時にCookieロード
 cachedXCookies = loadCookiesFromFile();
 if (cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0) {
   console.log('✅ Cached cookies restored from file');
@@ -72,7 +70,6 @@ function decodeProxyUrl(encoded) {
 
 const PROXY_PATH = '/proxy/';
 
-// ===== 6. REWRITE HTML (改変なし) =====
 function rewriteHTML(html, baseUrl) {
   const urlObj = new url.URL(baseUrl);
   const origin = `${urlObj.protocol}//${urlObj.host}`;
@@ -80,30 +77,382 @@ function rewriteHTML(html, baseUrl) {
     ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}`
     : `http://localhost:${PORT}`;
 
-  // 既にプロキシ化されているか確認
   function isAlreadyProxied(urlString) {
     return urlString.includes('/proxy/') || urlString.includes(proxyOrigin);
   }
 
-  // href, src, video source, form action をプロキシ化
-  html = html.replace(/(href|src|action)=["']([^"']+)["']/gi, (match, attr, value) => {
-    if (value.startsWith('javascript:') || value.startsWith('#') || value.startsWith('mailto:') || value.startsWith('tel:') || isAlreadyProxied(value)) {
+  // href書き換え
+  html = html.replace(/href\s*=\s*["']([^"']+)["']/gi, (match, href) => {
+    if (href.startsWith('javascript:') || href.startsWith('#') || 
+        href.startsWith('mailto:') || href.startsWith('tel:') || 
+        isAlreadyProxied(href)) {
       return match;
     }
-    let absoluteUrl = value;
+    
+    let absoluteUrl = href;
     try {
-      if (value.startsWith('//')) absoluteUrl = urlObj.protocol + value;
-      else if (value.startsWith('/')) absoluteUrl = origin + value;
-      else if (!value.startsWith('http')) absoluteUrl = new url.URL(value, baseUrl).href;
-      return `${attr}="/proxy/${encodeProxyUrl(absoluteUrl)}"`;
-    } catch {
+      if (href.startsWith('//')) {
+        absoluteUrl = urlObj.protocol + href;
+      } else if (href.startsWith('/')) {
+        absoluteUrl = origin + href;
+      } else if (!href.startsWith('http')) {
+        absoluteUrl = new url.URL(href, baseUrl).href;
+      }
+      return `href="/proxy/${encodeProxyUrl(absoluteUrl)}"`;
+    } catch (e) {
       return match;
     }
   });
 
-  // 不要スクリプト除去 + charset強制
-  html = html.replace(/<script[^>]*google[^>]*>[\s\S]*?<\/script>/gi, '');
-  html = html.replace(/<script[^>]*gstatic[^>]*>[\s\S]*?<\/script>/gi, '');
+  // src書き換え
+  html = html.replace(/src\s*=\s*["']([^"']+)["']/gi, (match, src) => {
+    if (src.startsWith('data:') || src.startsWith('blob:') || isAlreadyProxied(src)) {
+      return match;
+    }
+    
+    let absoluteUrl = src;
+    try {
+      if (src.startsWith('//')) {
+        absoluteUrl = urlObj.protocol + src;
+      } else if (src.startsWith('/')) {
+        absoluteUrl = origin + src;
+      } else if (!src.startsWith('http')) {
+        absoluteUrl = new url.URL(src, baseUrl).href;
+      }
+      return `src="/proxy/${encodeProxyUrl(absoluteUrl)}"`;
+    } catch (e) {
+      return match;
+    }
+  });
+
+  // video source タグの書き換え
+  html = html.replace(/<source\s+([^>]*?)src\s*=\s*["']([^"']+)["']([^>]*?)>/gi, (match, before, src, after) => {
+    if (src.startsWith('data:') || src.startsWith('blob:') || isAlreadyProxied(src)) {
+      return match;
+    }
+    
+    let absoluteUrl = src;
+    try {
+      if (src.startsWith('//')) {
+        absoluteUrl = urlObj.protocol + src;
+      } else if (src.startsWith('/')) {
+        absoluteUrl = origin + src;
+      } else if (!src.startsWith('http')) {
+        absoluteUrl = new url.URL(src, baseUrl).href;
+      }
+      return `<source ${before}src="/proxy/${encodeProxyUrl(absoluteUrl)}"${after}>`;
+    } catch (e) {
+      return match;
+    }
+  });
+
+  // action書き換え
+  html = html.replace(/action\s*=\s*["']([^"']+)["']/gi, (match, action) => {
+    if (isAlreadyProxied(action)) {
+      return match;
+    }
+    
+    let absoluteUrl = action;
+    try {
+      if (action.startsWith('//')) {
+        absoluteUrl = urlObj.protocol + action;
+      } else if (action.startsWith('/')) {
+        absoluteUrl = origin + action;
+      } else if (!action.startsWith('http')) {
+        absoluteUrl = new url.URL(action, baseUrl).href;
+      }
+      return `action="/proxy/${encodeProxyUrl(absoluteUrl)}"`;
+    } catch (e) {
+      return match;
+    }
+  });
+
+  // インターセプトスクリプト（無限ループ防止）
+  const interceptScript = `
+    <script>
+      (function() {
+        const PROXY_ORIGIN = '${proxyOrigin}';
+        const TARGET_ORIGIN = '${origin}';
+        const PROXY_PATH = '${PROXY_PATH}';
+        let redirectAttempts = 0;
+        const MAX_REDIRECT_ATTEMPTS = 5;
+        
+        console.log('[Proxy] Initializing for', TARGET_ORIGIN);
+        
+        function isAlreadyProxied(url) {
+          if (!url) return false;
+          return url.includes(PROXY_ORIGIN) || url.includes(PROXY_PATH);
+        }
+        
+        function toAbsoluteUrl(relativeUrl) {
+          if (!relativeUrl) return relativeUrl;
+          if (relativeUrl.startsWith('http://') || relativeUrl.startsWith('https://')) return relativeUrl;
+          if (relativeUrl.startsWith('//')) return 'https:' + relativeUrl;
+          if (relativeUrl.startsWith('/')) return TARGET_ORIGIN + relativeUrl;
+          return TARGET_ORIGIN + '/' + relativeUrl;
+        }
+        
+        function encodeProxyUrl(url) {
+          const base64 = btoa(url).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=/g, '');
+          return PROXY_ORIGIN + PROXY_PATH + base64;
+        }
+        
+        function proxyUrl(url) {
+          if (!url || typeof url !== 'string') return url;
+          if (isAlreadyProxied(url)) return url;
+          if (url.startsWith('blob:') || url.startsWith('data:')) return url;
+          const absoluteUrl = toAbsoluteUrl(url);
+          if (absoluteUrl.startsWith('http')) return encodeProxyUrl(absoluteUrl);
+          return url;
+        }
+        
+        // fetch インターセプト
+        const originalFetch = window.fetch;
+        window.fetch = function(resource, options) {
+          let url = typeof resource === 'string' ? resource : (resource.url || resource);
+          if (url && (url.includes('google.com') || url.includes('gstatic.com'))) {
+            return Promise.reject(new Error('Blocked'));
+          }
+          if (url && (url.startsWith('blob:') || url.startsWith('data:'))) {
+            return originalFetch.call(this, resource, options);
+          }
+          if (isAlreadyProxied(url)) {
+            return originalFetch.call(this, resource, options);
+          }
+          const proxiedUrl = proxyUrl(url);
+          if (proxiedUrl !== url) {
+            const newOptions = Object.assign({}, options);
+            if (newOptions.mode === 'cors') delete newOptions.mode;
+            if (typeof resource === 'string') {
+              return originalFetch.call(this, proxiedUrl, newOptions);
+            } else {
+              return originalFetch.call(this, new Request(proxiedUrl, newOptions));
+            }
+          }
+          return originalFetch.call(this, resource, options);
+        };
+
+        // XMLHttpRequest インターセプト
+        const originalOpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+          if (typeof url === 'string') {
+            if (url.includes('google.com') || url.includes('gstatic.com')) {
+              throw new Error('Blocked');
+            }
+            if (!url.startsWith('blob:') && !url.startsWith('data:')) {
+              if (!isAlreadyProxied(url)) {
+                const proxiedUrl = proxyUrl(url);
+                if (proxiedUrl !== url) {
+                  return originalOpen.call(this, method, proxiedUrl, ...rest);
+                }
+              }
+            }
+          }
+          return originalOpen.call(this, method, url, ...rest);
+        };
+
+        // HTMLMediaElement (video/audio) の src インターセプト
+        try {
+          const mediaSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
+          if (mediaSrcDescriptor && mediaSrcDescriptor.set) {
+            Object.defineProperty(HTMLMediaElement.prototype, 'src', {
+              set: function(value) {
+                const proxiedValue = proxyUrl(value);
+                return mediaSrcDescriptor.set.call(this, proxiedValue);
+              },
+              get: function() {
+                return mediaSrcDescriptor.get.call(this);
+              }
+            });
+          }
+        } catch (e) {
+          console.warn('[Proxy] Could not intercept HTMLMediaElement.src:', e.message);
+        }
+
+        // Image src のインターセプト
+        try {
+          const imageSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+          if (imageSrcDescriptor && imageSrcDescriptor.set) {
+            Object.defineProperty(HTMLImageElement.prototype, 'src', {
+              set: function(value) {
+                const proxiedValue = proxyUrl(value);
+                return imageSrcDescriptor.set.call(this, proxiedValue);
+              },
+              get: function() {
+                return imageSrcDescriptor.get.call(this);
+              }
+            });
+          }
+        } catch (e) {
+          console.warn('[Proxy] Could not intercept HTMLImageElement.src:', e.message);
+        }
+
+        // location.href インターセプト（無限ループ防止）
+        try {
+          const locationDescriptor = Object.getOwnPropertyDescriptor(window.Location.prototype, 'href');
+          if (locationDescriptor && locationDescriptor.set) {
+            Object.defineProperty(window.Location.prototype, 'href', {
+              set: function(value) {
+                console.log('[Proxy] location.href set:', value);
+                if (!value || typeof value !== 'string') return;
+                if (redirectAttempts >= MAX_REDIRECT_ATTEMPTS) {
+                  console.error('[Proxy] Too many redirects - BLOCKED');
+                  return;
+                }
+                if (isAlreadyProxied(value)) {
+                  redirectAttempts++;
+                  return locationDescriptor.set.call(this, value);
+                }
+                if (value.startsWith('#') || value.startsWith('?')) {
+                  return locationDescriptor.set.call(this, value);
+                }
+                if (value === window.location.href || value === window.location.pathname) {
+                  console.warn('[Proxy] Same-page redirect blocked');
+                  return;
+                }
+                const absoluteValue = toAbsoluteUrl(value);
+                if (absoluteValue.includes('x.com') || absoluteValue.includes('twitter.com')) {
+                  const proxiedValue = proxyUrl(absoluteValue);
+                  redirectAttempts++;
+                  return locationDescriptor.set.call(this, proxiedValue);
+                } else {
+                  console.warn('[Proxy] External redirect blocked');
+                  return;
+                }
+              },
+              get: function() { return window.location.href; }
+            });
+          }
+        } catch (e) {
+          console.warn('[Proxy] Could not intercept location.href:', e.message);
+        }
+
+        // History API の詳細な監視
+        try {
+          const originalPushState = window.history.pushState;
+          window.history.pushState = function(state, title, url) {
+            if (url) {
+              console.log('[Proxy] pushState called:', url);
+              if (typeof url === 'string' && (url.startsWith('/') || url.startsWith('#') || url.startsWith('?'))) {
+                return originalPushState.call(this, state, title, url);
+              }
+              if (typeof url === 'string' && !isAlreadyProxied(url) && url.startsWith('http')) {
+                const proxiedUrl = proxyUrl(url);
+                return originalPushState.call(this, state, title, proxiedUrl);
+              }
+            }
+            return originalPushState.call(this, state, title, url);
+          };
+
+          const originalReplaceState = window.history.replaceState;
+          window.history.replaceState = function(state, title, url) {
+            if (url) {
+              console.log('[Proxy] replaceState called:', url);
+              if (typeof url === 'string' && (url.startsWith('/') || url.startsWith('#') || url.startsWith('?'))) {
+                return originalReplaceState.call(this, state, title, url);
+              }
+              if (typeof url === 'string' && !isAlreadyProxied(url) && url.startsWith('http')) {
+                const proxiedUrl = proxyUrl(url);
+                return originalReplaceState.call(this, state, title, proxiedUrl);
+              }
+            }
+            return originalReplaceState.call(this, state, title, url);
+          };
+        } catch (e) {
+          console.warn('[Proxy] Could not intercept History API:', e.message);
+        }
+
+        // MutationObserver で動的に追加される要素を監視
+        const observer = new MutationObserver((mutations) => {
+          mutations.forEach((mutation) => {
+            mutation.addedNodes.forEach((node) => {
+              if (node.nodeType === 1) {
+                if (node.tagName === 'IMG' && node.src && !isAlreadyProxied(node.src)) {
+                  const proxiedSrc = proxyUrl(node.src);
+                  if (proxiedSrc !== node.src) {
+                    node.src = proxiedSrc;
+                  }
+                }
+                if ((node.tagName === 'VIDEO' || node.tagName === 'AUDIO') && node.src && !isAlreadyProxied(node.src)) {
+                  const proxiedSrc = proxyUrl(node.src);
+                  if (proxiedSrc !== node.src) {
+                    node.src = proxiedSrc;
+                  }
+                }
+                if (node.tagName === 'SOURCE' && node.src && !isAlreadyProxied(node.src)) {
+                  const proxiedSrc = proxyUrl(node.src);
+                  if (proxiedSrc !== node.src) {
+                    node.src = proxiedSrc;
+                  }
+                }
+                const imgs = node.querySelectorAll && node.querySelectorAll('img[src], video[src], audio[src], source[src]');
+                if (imgs) {
+                  imgs.forEach((el) => {
+                    if (el.src && !isAlreadyProxied(el.src)) {
+                      const proxiedSrc = proxyUrl(el.src);
+                      if (proxiedSrc !== el.src) {
+                        el.src = proxiedSrc;
+                      }
+                    }
+                  });
+                }
+              }
+            });
+          });
+        });
+
+        observer.observe(document.documentElement, {
+          childList: true,
+          subtree: true
+        });
+
+        // 認証エラー検知と警告表示
+        let authErrorCount = 0;
+        const originalXHRSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.send = function(...args) {
+          const xhr = this;
+          const originalOnLoad = xhr.onload;
+          
+          xhr.onload = function() {
+            try {
+              if (xhr.status === 401 || xhr.status === 403) {
+                authErrorCount++;
+                console.error('[Proxy] Auth error detected:', xhr.status, xhr.responseURL);
+                
+                if (authErrorCount > 5) {
+                  console.error('[Proxy] Too many auth errors, session may be expired');
+                  
+                  if (!document.getElementById('proxy-auth-warning')) {
+                    const warning = document.createElement('div');
+                    warning.id = 'proxy-auth-warning';
+                    warning.style.cssText = 'position:fixed;top:20px;right:20px;background:rgba(255,87,87,0.95);color:white;padding:20px;border-radius:8px;z-index:99999;max-width:300px;box-shadow:0 4px 12px rgba(0,0,0,0.3);';
+                    warning.innerHTML = '<strong>⚠️ セッション警告</strong><br><br>認証エラーが複数発生しています。<br>Cookieが期限切れの可能性があります。<br><br><a href="/x-cookie-helper.html" style="color:#fff;text-decoration:underline;">Cookieを再注入</a>';
+                    document.body.appendChild(warning);
+                    
+                    setTimeout(() => warning.remove(), 10000);
+                  }
+                }
+              }
+            } catch (e) {}
+            
+            if (originalOnLoad) {
+              return originalOnLoad.apply(this, arguments);
+            }
+          };
+          
+          return originalXHRSend.apply(this, args);
+        };
+
+        setTimeout(() => { redirectAttempts = 0; }, 10000);
+        console.log('[Proxy] Initialization complete');
+      })();
+    </script>
+  `;
+
+  html = html.replace(/<head[^>]*>/i, (match) => match + interceptScript);
+  html = html.replace(/<script[^>]*src=[^>]*google[^>]*>[\s\S]*?<\/script>/gi, '');
+  html = html.replace(/<script[^>]*src=[^>]*gstatic[^>]*>[\s\S]*?<\/script>/gi, '');
+
   if (!html.includes('charset')) {
     html = html.replace(/<head[^>]*>/i, '<head><meta charset="UTF-8">');
   }
@@ -111,7 +460,7 @@ function rewriteHTML(html, baseUrl) {
   return html;
 }
 
-// ===== 7. PUPPETEER SETUP =====
+// ===== 6. PUPPETEER SETUP =====
 async function loadPuppeteer() {
   if (process.env.RENDER) {
     const puppeteerCore = require('puppeteer-core');
@@ -175,6 +524,7 @@ async function initXLoginPage() {
 
   await page.setRequestInterception(true);
   page.on('request', (request) => {
+    if (request.isInterceptResolutionHandled()) return;
     const url = request.url();
     if (url.includes('google.com') || url.includes('gstatic.com') || url.includes('googleapis.com')) {
       request.abort().catch(() => {});
@@ -215,170 +565,41 @@ async function useXLoginPage(callback) {
     }
   }
 }
-// ===== 8. TEST ROUTES =====
-app.get('/test', (req, res) => {
-  res.json({ status: '✅ Routes are working!', cookies: !!cachedXCookies });
-});
 
-// ===== 9. PROXY (GET / POST / PUT / OPTIONS) =====
-app.options(`${PROXY_PATH}:encodedUrl*`, (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  res.status(204).send();
-});
-
-app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
-  try {
-    const targetUrl = decodeProxyUrl(req.params.encodedUrl + (req.params[0] || ''));
-    console.log('📡 GET Proxying:', targetUrl);
-
-    const response = await axios.get(targetUrl, {
-      responseType: 'arraybuffer',
-      headers: { 'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0' }
-    });
-
-    // HTMLを自動書き換え（rewriteHTML）
-    const contentType = response.headers['content-type'] || '';
-    if (contentType.includes('text/html')) {
-      const html = response.data.toString('utf8');
-      const rewritten = rewriteHTML(html, targetUrl);
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.send(rewritten);
-    } else {
-      res.setHeader('Content-Type', contentType);
-      res.send(response.data);
-    }
-  } catch (error) {
-    console.error('❌ GET Proxy error:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
-  try {
-    const targetUrl = decodeProxyUrl(req.params.encodedUrl + (req.params[0] || ''));
-    console.log('📡 POST Proxying:', targetUrl);
-
-    const response = await axios.post(targetUrl, req.body, {
-      headers: req.headers,
-      responseType: 'arraybuffer'
-    });
-
-    const contentType = response.headers['content-type'] || '';
-    if (contentType.includes('text/html')) {
-      const html = response.data.toString('utf8');
-      const rewritten = rewriteHTML(html, targetUrl);
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.send(rewritten);
-    } else {
-      res.setHeader('Content-Type', contentType);
-      res.send(response.data);
-    }
-  } catch (error) {
-    console.error('❌ POST Proxy error:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.put(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
-  try {
-    const targetUrl = decodeProxyUrl(req.params.encodedUrl + (req.params[0] || ''));
-    console.log('📡 PUT Proxying:', targetUrl);
-
-    const response = await axios.put(targetUrl, req.body, {
-      headers: req.headers,
-      responseType: 'arraybuffer'
-    });
-
-    const contentType = response.headers['content-type'] || '';
-    if (contentType.includes('text/html')) {
-      const html = response.data.toString('utf8');
-      const rewritten = rewriteHTML(html, targetUrl);
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.send(rewritten);
-    } else {
-      res.setHeader('Content-Type', contentType);
-      res.send(response.data);
-    }
-  } catch (error) {
-    console.error('❌ PUT Proxy error:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ===== 10. X COOKIE API =====
-app.post('/api/x-inject-cookies', async (req, res) => {
-  const { authToken, ct0Token } = req.body;
-
-  if (!authToken || !ct0Token) {
-    return res.status(400).json({ success: false, error: 'Missing tokens' });
-  }
-
-  const cookies = [
-    { name: 'auth_token', value: authToken, domain: '.x.com', path: '/', secure: true },
-    { name: 'ct0', value: ct0Token, domain: '.x.com', path: '/', secure: true }
-  ];
-
-  cachedXCookies = cookies;
-  saveCookiesToFile(cookies);
-
-  console.log('🍪 Injected new cookies into cache');
-  res.json({ success: true, cookies });
-});
-
-app.get('/api/x-cookies', (req, res) => {
-  res.json({
-    cached: !!cachedXCookies,
-    cookies: cachedXCookies || []
-  });
-});
-
-app.delete('/api/x-cookies', (req, res) => {
-  cachedXCookies = null;
-  if (fs.existsSync(COOKIE_FILE)) fs.unlinkSync(COOKIE_FILE);
-  console.log('🧹 Cleared X cookies');
-  res.json({ success: true });
-});
-// ===== 11. 共有 xLoginPage 初期化ブロック（起動時にキャッシュCookieがあれば投入） =====
+// 起動時にxLoginPage初期化
 (async () => {
   if (cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0) {
     try {
       console.log('🔄 Initializing xLoginPage with cached cookies...');
       xLoginPage = await initXLoginPage();
-      // setCookie expects cookie objects with url or domain/path; make best-effort
-      try {
-        await xLoginPage.setCookie(...cachedXCookies);
-        console.log('✅ xLoginPage initialized with cached cookies');
-      } catch (e) {
-        console.log('⚠️ Could not set cookies on xLoginPage directly:', e.message);
-      }
-
-      try {
-        const currentCookies = await xLoginPage.cookies();
-        console.log('📋 Current cookies in xLoginPage:');
-        currentCookies.forEach(c => {
-          console.log(`   - ${c.name}: ${c.value ? c.value.substring(0, 20) + '...' : '<no-value>'}`);
-        });
-      } catch (e) {
-        console.log('⚠️ Could not list cookies from xLoginPage:', e.message);
-      }
+      await xLoginPage.setCookie(...cachedXCookies);
+      console.log('✅ xLoginPage initialized with cached cookies');
+      const currentCookies = await xLoginPage.cookies();
+      console.log('📋 Current cookies in xLoginPage:');
+      currentCookies.forEach(c => {
+        console.log(`   - ${c.name}: ${c.value ? c.value.substring(0, 20) + '...' : '<no-value>'}`);
+      });
     } catch (e) {
       console.log('⚠️ Could not initialize xLoginPage:', e.message);
     }
   }
 })();
 
-// ===== 12. TEST / DEBUG ENDPOINTS（詳細） =====
+// ===== 7. TEST ROUTES =====
+app.get('/test', (req, res) => {
+  res.json({ 
+    status: 'Routes are working!',
+    hasCachedCookies: !!(cachedXCookies && cachedXCookies.length > 0),
+    hasXLoginPage: !!xLoginPage,
+    cookieCount: cachedXCookies ? cachedXCookies.length : 0,
+    cookieNames: cachedXCookies ? cachedXCookies.map(c => c.name) : []
+  });
+});
+
 app.get('/test-decode/:encoded', (req, res) => {
   try {
     const decoded = decodeProxyUrl(req.params.encoded);
-    res.json({
-      encoded: req.params.encoded,
-      decoded,
-      success: true
-    });
+    res.json({ encoded: req.params.encoded, decoded, success: true });
   } catch (e) {
     res.status(400).json({ error: e.message, encoded: req.params.encoded });
   }
@@ -394,9 +615,11 @@ app.get('/test-cookies', (req, res) => {
       return {
         name: c.name || 'no-name',
         domain: c.domain || 'no-domain',
-        valuePreview: c.value ? (c.value.substring(0, 20) + '...') : 'no-value',
+        value: c.value ? (c.value.substring(0, 20) + '...') : 'no-value',
         hasValue: !!c.value,
-        expires: c.expires ? new Date(c.expires * 1000).toISOString() : 'session'
+        valueLength: c.value ? c.value.length : 0,
+        expires: c.expires ? new Date(c.expires * 1000).toISOString() : 'session',
+        isExpired: c.expires ? (c.expires * 1000 < Date.now()) : false
       };
     }) : [],
     hasAuthToken: hasCookies ? !!cachedXCookies.find(c => c && c.name === 'auth_token') : false,
@@ -404,14 +627,15 @@ app.get('/test-cookies', (req, res) => {
   });
 });
 
-// ===== 13. 詳細プロキシ処理（Puppeteer 経由の HTML ハンドリング含む） =====
-/**
- * 補助: どのホストが x（旧twitter） かを判定
- */
-function isXHostname(hostname) {
-  if (!hostname) return false;
-  return hostname.includes('x.com') || hostname.includes('twitter.com');
-}
+// ===== 8. PROXY ROUTES =====
+app.options(`${PROXY_PATH}:encodedUrl*`, (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token, x-twitter-active-user, x-twitter-client-language');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  res.status(204).send();
+});
 
 app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
   try {
@@ -420,47 +644,43 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
     console.log('📡 GET Proxying:', targetUrl);
 
     const parsedUrl = new url.URL(targetUrl);
-    const isXDomain = isXHostname(parsedUrl.hostname);
-    const isApiEndpoint = parsedUrl.hostname.includes('api.x.com') || parsedUrl.pathname.includes('.json') || parsedUrl.pathname.includes('graphql');
+    const isXDomain = parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com');
+    const isApiEndpoint = parsedUrl.hostname.includes('api.x.com') || 
+                          parsedUrl.pathname.includes('.json') ||
+                          parsedUrl.pathname.includes('graphql');
     const isMediaFile = parsedUrl.pathname.match(/\.(js|css|json|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|mp4|webm|m3u8|ts|m4s|mpd)$/i) ||
                         parsedUrl.hostname.includes('video.twimg.com') ||
-                        parsedUrl.hostname.includes('video-s.twimg.com') ||
                         parsedUrl.hostname.includes('pbs.twimg.com') ||
                         parsedUrl.hostname.includes('abs.twimg.com');
-
+    
     const isHTML = !isApiEndpoint && !isMediaFile;
-
     const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
 
     if (isHTML) {
-      console.log('🌐 Handling HTML via Puppeteer');
-
+      console.log('🌐 Using Puppeteer for HTML page');
       let page;
-      let useSharedXPage = isXDomain && xLoginPage && hasCookies;
+      const useXLoginPageShared = isXDomain && xLoginPage && hasCookies;
 
       try {
-        if (useSharedXPage) {
-          // use shared logged-in page
+        if (useXLoginPageShared) {
+          console.log('♻️ Using shared xLoginPage');
           const htmlContent = await useXLoginPage(async () => {
             await xLoginPage.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
-            // wait a bit for dynamic content
-            await new Promise(r => setTimeout(r, 2500));
+            await new Promise(r => setTimeout(r, 3000));
             return await xLoginPage.content();
           });
-
+          
           const rewrittenHTML = rewriteHTML(htmlContent, targetUrl);
           res.setHeader('Content-Type', 'text/html; charset=utf-8');
           res.setHeader('Access-Control-Allow-Origin', '*');
           return res.send(rewrittenHTML);
         } else {
-          // create ephemeral browser page
+          console.log('🆕 Creating new page');
           const browserInstance = await initBrowser();
           page = await browserInstance.newPage();
           page.setDefaultNavigationTimeout(60000);
-          page.setDefaultTimeout(60000);
           await page.setViewport({ width: 1920, height: 1080 });
-
-          await page.setUserAgent(req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
+          await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
 
           if (isXDomain && hasCookies) {
             try {
@@ -470,24 +690,15 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
                 console.log('🍪 Cookies set for new page:', validCookies.length);
               }
             } catch (e) {
-              console.log('⚠️ Could not set cookies on new page:', e.message);
+              console.log('⚠️ Could not set cookies:', e.message);
             }
           }
 
-          try {
-            await page.goto(targetUrl, { waitUntil: isXDomain ? 'domcontentloaded' : 'networkidle2', timeout: 60000 });
-          } catch (navErr) {
-            console.log('⚠️ Navigation warning:', navErr.message);
-          }
-
-          // small wait for client-side render
-          await new Promise(r => setTimeout(r, isXDomain ? 3000 : 1500));
+          await page.goto(targetUrl, { waitUntil: isXDomain ? 'domcontentloaded' : 'networkidle2', timeout: 60000 }).catch(() => {});
+          await new Promise(r => setTimeout(r, isXDomain ? 3000 : 2000));
 
           const htmlContent = await page.content();
-
-          if (page && page !== xLoginPage) {
-            await page.close().catch(() => {});
-          }
+          if (page && page !== xLoginPage) await page.close().catch(() => {});
 
           const rewrittenHTML = rewriteHTML(htmlContent, targetUrl);
           res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -495,94 +706,85 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
           return res.send(rewrittenHTML);
         }
       } catch (err) {
-        console.error('❌ HTML handling error:', err.message);
+        console.error('❌ Navigation error:', err.message);
         if (err.message && (err.message.includes('aborted') || err.message.includes('ERR_ABORTED'))) {
           res.status(204).send();
           return;
         }
-
-        // Return friendly error page
-        res.status(500).send(`
-          <!doctype html>
-          <html>
-            <head><meta charset="utf-8"><title>Proxy Error</title></head>
-            <body style="font-family:Arial,Helvetica,sans-serif;background:#111;color:#eee;padding:40px;">
-              <h1>読み込みに失敗しました</h1>
-              <p>対象: <code>${targetUrl}</code></p>
-              <pre style="color:#f88;">${String(err.message).slice(0, 400)}</pre>
-            </body>
-          </html>
-        `);
+        res.status(500).send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Error</title></head><body><h1>ページ読み込みエラー</h1><p>${targetUrl}</p></body></html>`);
         return;
       }
     } else {
-      // non-HTML (media or API) -> use axios
-      console.log('📦 Fetching resource via axios:', targetUrl);
-
+      console.log('📦 Fetching non-HTML resource');
       const headers = {
-        'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0',
-        'Accept': req.headers['accept'] || '*/*',
+        'User-Agent': 'Mozilla/5.0',
+        'Accept': '*/*',
         'Referer': `${parsedUrl.protocol}//${parsedUrl.host}/`
       };
 
       if (isXDomain && hasCookies) {
-        try {
-          const cookieString = cachedXCookies
-            .filter(c => c && c.name && c.value)
-            .map(c => `${c.name}=${c.value}`)
-            .join('; ');
-          if (cookieString) headers['Cookie'] = cookieString;
-        } catch (e) { /* ignore */ }
-      } else if (req.headers.cookie) {
-        headers['Cookie'] = req.headers.cookie;
+        const cookieString = cachedXCookies
+          .filter(c => c && c.name && c.value)
+          .map(c => `${c.name}=${c.value}`)
+          .join('; ');
+        if (cookieString) headers['Cookie'] = cookieString;
+        
+        if (isApiEndpoint) {
+          const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
+          if (ct0Cookie && ct0Cookie.value) {
+            headers['x-csrf-token'] = ct0Cookie.value;
+          }
+          headers['x-twitter-active-user'] = 'yes';
+          headers['x-twitter-client-language'] = 'en';
+          if (targetUrl.includes('graphql')) {
+            headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
+          }
+        }
       }
 
-      try {
-        const response = await axios.get(targetUrl, {
-          headers,
-          responseType: 'arraybuffer',
-          maxRedirects: 5,
-          validateStatus: () => true,
-          timeout: 20000
-        });
+      const response = await axios.get(targetUrl, {
+        headers,
+        responseType: 'arraybuffer',
+        maxRedirects: 5,
+        validateStatus: () => true,
+        timeout: 15000
+      });
 
-        if (response.status === 404) {
-          res.status(404).send('');
-          return;
-        }
-
-        res.setHeader('Content-Type', response.headers['content-type'] || 'application/octet-stream');
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        return res.send(response.data);
-      } catch (e) {
-        console.error('❌ Resource fetch error:', e.message);
-        res.status(500).json({ error: e.message });
+      if (response.status === 404) {
+        res.status(404).send('');
         return;
       }
+
+      res.setHeader('Content-Type', response.headers['content-type'] || 'application/octet-stream');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      return res.send(response.data);
     }
   } catch (error) {
-    console.error('❌ GET Proxy error (outer):', error.message);
+    console.error('❌ GET Proxy error:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
 
-// POST /proxy/... (axios-backed, but keep HTML rewrite behavior)
 app.post(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
   try {
-    const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
-    const targetUrl = decodeProxyUrl(encodedUrl);
+    const targetUrl = decodeProxyUrl(req.params.encodedUrl + (req.params[0] || ''));
     console.log('📡 POST Proxying:', targetUrl);
 
     const parsedUrl = new url.URL(targetUrl);
-    const isXDomain = isXHostname(parsedUrl.hostname);
+    const isXDomain = parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com');
     const headers = Object.assign({}, req.headers);
     headers['Referer'] = `${parsedUrl.protocol}//${parsedUrl.host}/`;
 
     if (isXDomain && cachedXCookies && cachedXCookies.length > 0) {
-      try {
-        const cookieString = cachedXCookies.map(c => `${c.name}=${c.value}`).join('; ');
-        headers['Cookie'] = cookieString;
-      } catch (e) {}
+      const cookieString = cachedXCookies.map(c => `${c.name}=${c.value}`).join('; ');
+      headers['Cookie'] = cookieString;
+      const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
+      if (ct0Cookie) headers['x-csrf-token'] = ct0Cookie.value;
+      headers['x-twitter-active-user'] = 'yes';
+      headers['x-twitter-client-language'] = 'en';
+      if (targetUrl.includes('graphql')) {
+        headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
+      }
     }
 
     const response = await axios.post(targetUrl, req.body, {
@@ -598,9 +800,11 @@ app.post(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
       let html = response.data.toString('utf8');
       html = rewriteHTML(html, targetUrl);
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Access-Control-Allow-Origin', '*');
       return res.send(html);
     } else {
       res.setHeader('Content-Type', contentType);
+      res.setHeader('Access-Control-Allow-Origin', '*');
       return res.send(response.data);
     }
   } catch (error) {
@@ -611,20 +815,19 @@ app.post(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
 
 app.put(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
   try {
-    const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
-    const targetUrl = decodeProxyUrl(encodedUrl);
+    const targetUrl = decodeProxyUrl(req.params.encodedUrl + (req.params[0] || ''));
     console.log('📡 PUT Proxying:', targetUrl);
 
     const parsedUrl = new url.URL(targetUrl);
-    const isXDomain = isXHostname(parsedUrl.hostname);
+    const isXDomain = parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com');
     const headers = Object.assign({}, req.headers);
     headers['Referer'] = `${parsedUrl.protocol}//${parsedUrl.host}/`;
 
     if (isXDomain && cachedXCookies && cachedXCookies.length > 0) {
-      try {
-        const cookieString = cachedXCookies.map(c => `${c.name}=${c.value}`).join('; ');
-        headers['Cookie'] = cookieString;
-      } catch (e) {}
+      const cookieString = cachedXCookies.map(c => `${c.name}=${c.value}`).join('; ');
+      headers['Cookie'] = cookieString;
+      const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
+      if (ct0Cookie) headers['x-csrf-token'] = ct0Cookie.value;
     }
 
     const response = await axios.put(targetUrl, req.body, {
@@ -635,23 +838,40 @@ app.put(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
       timeout: 30000
     });
 
-    const contentType = response.headers['content-type'] || '';
-    if (contentType.includes('text/html')) {
-      let html = response.data.toString('utf8');
-      html = rewriteHTML(html, targetUrl);
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      return res.send(html);
-    } else {
-      res.setHeader('Content-Type', contentType);
-      return res.send(response.data);
-    }
+    res.setHeader('Content-Type', response.headers['content-type'] || 'application/octet-stream');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    return res.send(response.data);
   } catch (error) {
     console.error('❌ PUT Proxy error:', error.message);
     res.status(500).json({ error: error.message });
   }
+});❌ PUT Proxy error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
 });
 
-// ===== 14. 追加 API：詳細な x-cookie 注入（元の挙動を保持） =====
+// ===== 9. API ROUTES =====
+app.post('/api/proxy', async (req, res) => {
+  console.log('🔵 [API] /api/proxy called');
+  console.log('🔵 [API] Request body:', req.body);
+  
+  try {
+    const { url } = req.body;
+    if (!url) {
+      return res.status(400).json({ error: 'URLが必要です' });
+    }
+
+    const encodedUrl = encodeProxyUrl(url);
+    res.json({
+      success: true,
+      redirectUrl: `${PROXY_PATH}${encodedUrl}`
+    });
+
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/x-inject-cookies', async (req, res) => {
   const { authToken, ct0Token } = req.body;
 
@@ -690,7 +910,6 @@ app.post('/api/x-inject-cookies', async (req, res) => {
     saveCookiesToFile(cookies);
     console.log('[API] ✅ Cookies cached globally and saved to file');
 
-    // Try to create xLoginPage if not exists and set cookies there
     if (!xLoginPage) {
       try {
         console.log('[API] Creating xLoginPage...');
@@ -698,6 +917,13 @@ app.post('/api/x-inject-cookies', async (req, res) => {
         console.log('[API] ✅ xLoginPage created');
       } catch (initError) {
         console.error('[API] ❌ Failed to create xLoginPage:', initError.message);
+        return res.json({
+          success: true,
+          message: 'Cookies cached (xLoginPage creation failed)',
+          cached: true,
+          persisted: true,
+          hasXLoginPage: false
+        });
       }
     }
 
@@ -710,7 +936,6 @@ app.post('/api/x-inject-cookies', async (req, res) => {
       }
     }
 
-    // Attempt to navigate to x.com to verify
     let currentUrl = 'N/A';
     let allCookies = [];
     let hasAuthToken = false;
@@ -745,28 +970,14 @@ app.post('/api/x-inject-cookies', async (req, res) => {
       return res.json({
         success: true,
         message: 'Cookies cached and persisted (navigation skipped)',
-        warning: navError.message,
         cached: true,
         persisted: true,
         hasXLoginPage: !!xLoginPage,
-        cookieCount: cookies.length,
-        injectedCookies: {
-          authToken: authToken.substring(0, 10) + '...',
-          ct0Token: ct0Token.substring(0, 10) + '...'
-        }
+        cookieCount: cookies.length
       });
     }
   } catch (error) {
     console.error('[API] Cookie injection error:', error.message);
-    if (cachedXCookies && cachedXCookies.length > 0) {
-      return res.json({
-        success: true,
-        message: 'Cookies cached (verification skipped)',
-        cached: true,
-        persisted: true,
-        hasXLoginPage: !!xLoginPage
-      });
-    }
     return res.status(500).json({
       success: false,
       error: 'Cookie injection failed',
@@ -775,7 +986,6 @@ app.post('/api/x-inject-cookies', async (req, res) => {
   }
 });
 
-// ===== 15. 追加 API: x-cookies (詳細版) =====
 app.get('/api/x-cookies', async (req, res) => {
   try {
     const hasCachedCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
@@ -783,10 +993,8 @@ app.get('/api/x-cookies', async (req, res) => {
     if (!hasCachedCookies && !xLoginPage) {
       return res.status(400).json({
         success: false,
-        error: 'No cookies cached. Please inject cookies first.',
-        cached: false,
-        hasCachedCookies: false,
-        hasXLoginPage: false
+        error: 'No cookies cached',
+        cached: false
       });
     }
 
@@ -797,7 +1005,6 @@ app.get('/api/x-cookies', async (req, res) => {
       try {
         cookies = await xLoginPage.cookies();
       } catch (e) {
-        console.log('⚠️ Could not get cookies from xLoginPage:', e.message);
         cookies = [];
       }
     }
@@ -808,110 +1015,41 @@ app.get('/api/x-cookies', async (req, res) => {
       success: true,
       isLoggedIn: !!(authToken && authToken.value),
       cached: hasCachedCookies,
-      hasCachedCookies,
-      hasXLoginPage: !!xLoginPage,
       cookieCount: cookies.length,
       cookies: cookies.map(c => ({
         name: c.name || 'unknown',
         domain: c.domain || 'unknown',
         expires: c.expires ? new Date(c.expires * 1000).toISOString() : 'session'
-      })),
-      currentUrl: xLoginPage ? xLoginPage.url() : 'N/A',
-      message: hasCachedCookies ? 'Cookies are cached and persistent' : 'Cookies from session only'
+      }))
     });
   } catch (error) {
-    console.error('[API] GET /api/x-cookies error:', error.message);
     return res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// ===== 16. DELETE x-cookies (詳細版) =====
 app.delete('/api/x-cookies', async (req, res) => {
   try {
     cachedXCookies = null;
-    console.log('[API] Cookie cache cleared');
-
-    if (fs.existsSync(COOKIE_FILE)) {
-      fs.unlinkSync(COOKIE_FILE);
-      console.log('[API] Cookie file deleted');
-    }
-
+    if (fs.existsSync(COOKIE_FILE)) fs.unlinkSync(COOKIE_FILE);
     if (xLoginPage) {
       try {
         const cookies = await xLoginPage.cookies();
         for (const cookie of cookies) {
-          try { await xLoginPage.deleteCookie(cookie); } catch (e) {}
+          await xLoginPage.deleteCookie(cookie).catch(() => {});
         }
-        console.log('[API] xLoginPage cookies cleared');
-      } catch (e) {
-        console.log('[API] Could not clear cookies from xLoginPage:', e.message);
-      }
+      } catch (e) {}
     }
-
-    return res.json({ success: true, message: 'All X cookies cleared (memory and file)' });
+    return res.json({ success: true, message: 'All X cookies cleared' });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// ===== 17. Xページ テストヘルパー =====
-async function testXPageAccess(page) {
-  console.log('[X-TEST] Testing X page access without login...');
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const results = { tests: [] };
-
-  try {
-    await page.goto('https://x.com/', { waitUntil: ['load', 'domcontentloaded'], timeout: 30000 }).catch(() => {});
-    await sleep(3000);
-    const pageInfo1 = await page.evaluate(() => ({
-      url: window.location.href,
-      title: document.title,
-      bodyText: document.body.innerText.substring(0, 500),
-    }));
-    results.tests.push({ page: 'top', ...pageInfo1 });
-  } catch (e) {
-    results.tests.push({ page: 'top', error: e.message });
-  }
-
-  try {
-    await page.goto('https://x.com/elonmusk', { waitUntil: ['load', 'domcontentloaded'], timeout: 30000 }).catch(() => {});
-    await sleep(3000);
-    const pageInfo2 = await page.evaluate(() => ({
-      url: window.location.href,
-      title: document.title,
-      bodyText: document.body.innerText.substring(0, 500),
-      hasContent: document.body.innerText.length > 1000
-    }));
-    results.tests.push({ page: 'profile', ...pageInfo2 });
-  } catch (e) {
-    results.tests.push({ page: 'profile', error: e.message });
-  }
-
-  const blockedCount = results.tests.filter(t => t.error || t.hasError).length;
-  const successCount = results.tests.filter(t => !t.error && !t.hasError).length;
-
-  results.summary = {
-    total: results.tests.length,
-    success: successCount,
-    blocked: blockedCount,
-    conclusion: blockedCount === results.tests.length ? 'All pages blocked' : 'Some pages accessible'
-  };
-
-  return results;
-}
-
-app.get('/api/x-test', async (req, res) => {
-  try {
-    if (!xLoginPage) xLoginPage = await initXLoginPage();
-    const results = await testXPageAccess(xLoginPage);
-    res.json({ success: true, results });
-  } catch (error) {
-    console.error('[API] Test error:', error.message);
-    res.status(500).json({ success: false, error: error.message });
-  }
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok' });
 });
 
-// ===== 18. 静的ファイル & 404 =====
+// ===== 10. STATIC FILES & ROOT =====
 app.use(express.static('public'));
 
 app.get('/x-cookie-helper.html', (req, res) => {
@@ -931,7 +1069,7 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Route not found', path: req.path, method: req.method });
 });
 
-// ===== 19. SERVER START =====
+// ===== 11. SERVER START =====
 app.listen(PORT, () => {
   console.log(`🚀 Yubikiri Proxy Pro running on port ${PORT}`);
   console.log(`🔍 Environment: ${process.env.RENDER ? 'Render' : 'Local'}`);
@@ -943,3 +1081,69 @@ process.on('SIGTERM', async () => {
   if (browser) await browser.close().catch(() => {});
   process.exit(0);
 });
+
+    if (isXDomain && cachedXCookies && cachedXCookies.length > 0) {
+      const cookieString = cachedXCookies.map(c => `${c.name}=${c.value}`).join('; ');
+      headers['Cookie'] = cookieString;
+      const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
+      if (ct0Cookie) headers['x-csrf-token'] = ct0Cookie.value;
+      headers['x-twitter-active-user'] = 'yes';
+      headers['x-twitter-client-language'] = 'en';
+      if (targetUrl.includes('graphql')) {
+        headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
+      }
+    }
+
+    const response = await axios.post(targetUrl, req.body, {
+      headers,
+      responseType: 'arraybuffer',
+      maxRedirects: 5,
+      validateStatus: () => true,
+      timeout: 30000
+    });
+
+    const contentType = response.headers['content-type'] || '';
+    if (contentType.includes('text/html')) {
+      let html = response.data.toString('utf8');
+      html = rewriteHTML(html, targetUrl);
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.send(html);
+    } else {
+      res.setHeader('Content-Type', contentType);
+      return res.send(response.data);
+    }
+  } catch (error) {
+    console.error('❌ POST Proxy error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
+  try {
+    const targetUrl = decodeProxyUrl(req.params.encodedUrl + (req.params[0] || ''));
+    console.log('📡 PUT Proxying:', targetUrl);
+
+    const parsedUrl = new url.URL(targetUrl);
+    const isXDomain = parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com');
+    const headers = Object.assign({}, req.headers);
+    headers['Referer'] = `${parsedUrl.protocol}//${parsedUrl.host}/`;
+
+    if (isXDomain && cachedXCookies && cachedXCookies.length > 0) {
+      const cookieString = cachedXCookies.map(c => `${c.name}=${c.value}`).join('; ');
+      headers['Cookie'] = cookieString;
+      const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
+      if (ct0Cookie) headers['x-csrf-token'] = ct0Cookie.value;
+    }
+
+    const response = await axios.put(targetUrl, req.body, {
+      headers,
+      responseType: 'arraybuffer',
+      maxRedirects: 5,
+      validateStatus: () => true,
+      timeout: 30000
+    });
+
+    res.setHeader('Content-Type', response.headers['content-type'] || 'application/octet-stream');
+    return res.send(response.data);
+  } catch (error) {
+    console.error('
