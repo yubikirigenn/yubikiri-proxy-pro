@@ -1,723 +1,21 @@
-// ===== 1. DEPENDENCIES =====
-const express = require('express');
-const cors = require('cors');
-const axios = require('axios');
-const path = require('path');
-const url = require('url');
-const fs = require('fs');
-require('dotenv').config();
-
-// ===== 2. INITIALIZATION =====
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-// 変数宣言（ファイル内で一度だけ）
-let browser;
-let puppeteer;
-let xLoginPage = null;
-let cachedXCookies = null;
-let xLoginPageBusy = false; // 🆕 ページ使用中フラグ
-const xLoginPageQueue = []; // 🆕 待機キュー
-
-const COOKIE_FILE = path.join(__dirname, '.x-cookies.json');
-
-// ===== 3. COOKIE PERSISTENCE FUNCTIONS =====
-function saveCookiesToFile(cookies) {
-  try {
-    fs.writeFileSync(COOKIE_FILE, JSON.stringify(cookies, null, 2));
-    console.log('💾 Cookies saved to file');
-  } catch (e) {
-    console.error('❌ Failed to save cookies:', e.message);
-  }
-}
-
-function loadCookiesFromFile() {
-  try {
-    if (fs.existsSync(COOKIE_FILE)) {
-      const data = fs.readFileSync(COOKIE_FILE, 'utf8');
-      const cookies = JSON.parse(data);
-      console.log('📂 Cookies loaded from file');
-      return cookies;
-    }
-  } catch (e) {
-    console.error('❌ Failed to load cookies:', e.message);
-  }
-  return null;
-}
-
-// Load cookies on startup
-cachedXCookies = loadCookiesFromFile();
-if (cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0) {
-  console.log('✅ Cached cookies restored from file');
-  console.log(`   Cookie count: ${cachedXCookies.length}`);
-}
-
-// ===== 4. MIDDLEWARE =====
-app.use(cors());
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
-
-// 🔴 CRITICAL FIX: 静的ファイルを後で提供（API routesの後）
-// app.use(express.static('public')); // ← ここでは使わない
-
-// ===== 5. UTILITY FUNCTIONS =====
-function encodeProxyUrl(targetUrl) {
-  return Buffer.from(targetUrl).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-}
-
-function decodeProxyUrl(encoded) {
-  const base64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
-  return Buffer.from(base64, 'base64').toString('utf-8');
-}
-
-// プロキシパスを変更（フィルタリング回避）
-const PROXY_PATH = '/proxy/'; // 標準的なプロキシパス
-
-function rewriteHTML(html, baseUrl) {
-  const urlObj = new url.URL(baseUrl);
-  const origin = `${urlObj.protocol}//${urlObj.host}`;
-  const proxyOrigin = process.env.RENDER ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : `http://localhost:${PORT}`;
-
-  // 既にプロキシ化されているかチェック
-  function isAlreadyProxied(urlString) {
-    return urlString.includes('/proxy/') || urlString.includes(proxyOrigin);
-  }
-
-  // href書き換え
-  html = html.replace(/href\s*=\s*["']([^"']+)["']/gi, (match, href) => {
-    if (href.startsWith('javascript:') || href.startsWith('#') || 
-        href.startsWith('mailto:') || href.startsWith('tel:') || 
-        isAlreadyProxied(href)) {
-      return match;
+page.on('request', (request) => {
+    if (request.isInterceptResolutionHandled()) {
+      return;
     }
     
-    let absoluteUrl = href;
-    try {
-      if (href.startsWith('//')) {
-        absoluteUrl = urlObj.protocol + href;
-      } else if (href.startsWith('/')) {
-        absoluteUrl = origin + href;
-      } else if (!href.startsWith('http')) {
-        absoluteUrl = new url.URL(href, baseUrl).href;
-      }
-      return `href="/proxy/${encodeProxyUrl(absoluteUrl)}"`;
-    } catch (e) {
-      return match;
-    }
-  });
-
-  // src書き換え
-  html = html.replace(/src\s*=\s*["']([^"']+)["']/gi, (match, src) => {
-    if (src.startsWith('data:') || src.startsWith('blob:') || isAlreadyProxied(src)) {
-      return match;
+    const requestUrl = request.url();
+    if (requestUrl.includes('google.com') || 
+        requestUrl.includes('gstatic.com') ||
+        requestUrl.includes('googleapis.com')) {
+      request.abort().catch(() => {});
+      return;
     }
     
-    let absoluteUrl = src;
-    try {
-      if (src.startsWith('//')) {
-        absoluteUrl = urlObj.protocol + src;
-      } else if (src.startsWith('/')) {
-        absoluteUrl = origin + src;
-      } else if (!src.startsWith('http')) {
-        absoluteUrl = new url.URL(src, baseUrl).href;
-      }
-      return `src="/proxy/${encodeProxyUrl(absoluteUrl)}"`;
-    } catch (e) {
-      return match;
-    }
+    request.continue().catch(() => {});
   });
 
-  // video source タグの書き換え（動画用）
-  html = html.replace(/<source\s+([^>]*?)src\s*=\s*["']([^"']+)["']([^>]*?)>/gi, (match, before, src, after) => {
-    if (src.startsWith('data:') || src.startsWith('blob:') || isAlreadyProxied(src)) {
-      return match;
-    }
-    
-    let absoluteUrl = src;
-    try {
-      if (src.startsWith('//')) {
-        absoluteUrl = urlObj.protocol + src;
-      } else if (src.startsWith('/')) {
-        absoluteUrl = origin + src;
-      } else if (!src.startsWith('http')) {
-        absoluteUrl = new url.URL(src, baseUrl).href;
-      }
-      return `<source ${before}src="/proxy/${encodeProxyUrl(absoluteUrl)}"${after}>`;
-    } catch (e) {
-      return match;
-    }
-  });
-
-  // action書き換え
-  html = html.replace(/action\s*=\s*["']([^"']+)["']/gi, (match, action) => {
-    if (isAlreadyProxied(action)) {
-      return match;
-    }
-    
-    let absoluteUrl = action;
-    try {
-      if (action.startsWith('//')) {
-        absoluteUrl = urlObj.protocol + action;
-      } else if (action.startsWith('/')) {
-        absoluteUrl = origin + action;
-      } else if (!action.startsWith('http')) {
-        absoluteUrl = new url.URL(action, baseUrl).href;
-      }
-      return `action="/proxy/${encodeProxyUrl(absoluteUrl)}"`;
-    } catch (e) {
-      return match;
-    }
-  });
-
-  // インターセプトスクリプト（無限ループ防止強化版）
-  const interceptScript = `
-    <script>
-      (function() {
-        const PROXY_ORIGIN = '${proxyOrigin}';
-        const TARGET_ORIGIN = '${origin}';
-        const PROXY_PATH = '${PROXY_PATH}';
-        
-        console.log('[Content] Initializing for', TARGET_ORIGIN);
-        
-        // Google無効化
-        Object.defineProperty(window, 'google', {
-          get: () => undefined,
-          set: () => false,
-          configurable: false
-        });
-        
-        Object.defineProperty(window, 'gapi', {
-          get: () => undefined,
-          set: () => false,
-          configurable: false
-        });
-        
-        function toAbsoluteUrl(relativeUrl) {
-          if (!relativeUrl) return relativeUrl;
-          
-          if (relativeUrl.startsWith('http://') || relativeUrl.startsWith('https://')) {
-            return relativeUrl;
-          }
-          if (relativeUrl.startsWith('//')) {
-            return 'https:' + relativeUrl;
-          }
-          if (relativeUrl.startsWith('/')) {
-            return TARGET_ORIGIN + relativeUrl;
-          }
-          return TARGET_ORIGIN + '/' + relativeUrl;
-        }
-        
-        function encodeProxyUrl(url) {
-          const base64 = btoa(url).replace(/\\+/g, '-').replace(/\\\//g, '_').replace(/=/g, '');
-          return PROXY_ORIGIN + PROXY_PATH + base64;
-        }
-        
-        // 既にプロキシ化済みかチェック
-        function isAlreadyProxied(url) {
-          if (!url) return false;
-          return url.includes(PROXY_ORIGIN) || 
-                 url.includes(PROXY_PATH) ||
-                 url.startsWith(PROXY_PATH);
-        }
-        
-        // 動画・メディアURLかチェック
-        function isMediaUrl(url) {
-          if (!url) return false;
-          try {
-            const urlLower = url.toLowerCase();
-            return urlLower.includes('video.twimg.com') ||
-                   urlLower.includes('video-s.twimg.com') ||
-                   urlLower.includes('pbs.twimg.com') ||
-                   urlLower.includes('abs.twimg.com') ||
-                   urlLower.match(/\\.(m3u8|ts|m4s|mp4|webm|jpg|png|gif)($|\\?)/);
-          } catch (e) {
-            return false;
-          }
-        }
-
-        // URL変換用のヘルパー（全てのケースで使用）
-        function proxyUrl(url) {
-          if (!url || typeof url !== 'string') return url;
-          if (isAlreadyProxied(url)) return url;
-          if (url.startsWith('blob:') || url.startsWith('data:')) return url;
-          
-          const absoluteUrl = toAbsoluteUrl(url);
-          if (absoluteUrl.startsWith('http')) {
-            return encodeProxyUrl(absoluteUrl);
-          }
-          return url;
-        }
-        
-        // fetch インターセプト
-        const originalFetch = window.fetch;
-        window.fetch = function(resource, options) {
-          let url = typeof resource === 'string' ? resource : (resource.url || resource);
-          
-          // Google関連はブロック
-          if (url && (url.includes('google.com') || url.includes('gstatic.com'))) {
-            return Promise.reject(new Error('Blocked'));
-          }
-          
-          // blob/dataはそのまま
-          if (url && (url.startsWith('blob:') || url.startsWith('data:'))) {
-            return originalFetch.call(this, resource, options);
-          }
-          
-          // 既にプロキシ化されているURLはそのまま
-          if (isAlreadyProxied(url)) {
-            return originalFetch.call(this, resource, options);
-          }
-          
-          const proxiedUrl = proxyUrl(url);
-          if (proxiedUrl !== url) {
-            const newOptions = Object.assign({}, options);
-            if (newOptions.mode === 'cors') {
-              delete newOptions.mode;
-            }
-            
-            if (typeof resource === 'string') {
-              return originalFetch.call(this, proxiedUrl, newOptions);
-            } else {
-              return originalFetch.call(this, new Request(proxiedUrl, newOptions));
-            }
-          }
-          
-          return originalFetch.call(this, resource, options);
-        };
-
-        // XMLHttpRequest インターセプト
-        const originalOpen = XMLHttpRequest.prototype.open;
-        XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-          if (typeof url === 'string') {
-            // Google関連はブロック
-            if (url.includes('google.com') || url.includes('gstatic.com')) {
-              throw new Error('Blocked');
-            }
-            
-            // blob/dataはそのまま
-            if (!url.startsWith('blob:') && !url.startsWith('data:')) {
-              if (!isAlreadyProxied(url)) {
-                const proxiedUrl = proxyUrl(url);
-                if (proxiedUrl !== url) {
-                  return originalOpen.call(this, method, proxiedUrl, ...rest);
-                }
-              }
-            }
-          }
-          
-          return originalOpen.call(this, method, url, ...rest);
-        };
-
-        // HTMLMediaElement (video/audio) のsrc設定をインターセプト
-        try {
-          const mediaSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
-          if (mediaSrcDescriptor && mediaSrcDescriptor.set) {
-            Object.defineProperty(HTMLMediaElement.prototype, 'src', {
-              set: function(value) {
-                const proxiedValue = proxyUrl(value);
-                console.log('[Proxy] Media src:', value, '->', proxiedValue);
-                return mediaSrcDescriptor.set.call(this, proxiedValue);
-              },
-              get: function() {
-                return mediaSrcDescriptor.get.call(this);
-              }
-            });
-          }
-        } catch (e) {
-          console.warn('[Proxy] Could not intercept HTMLMediaElement.src:', e.message);
-        }
-
-        // Image src のインターセプト
-        try {
-          const imageSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
-          if (imageSrcDescriptor && imageSrcDescriptor.set) {
-            Object.defineProperty(HTMLImageElement.prototype, 'src', {
-              set: function(value) {
-                const proxiedValue = proxyUrl(value);
-                return imageSrcDescriptor.set.call(this, proxiedValue);
-              },
-              get: function() {
-                return imageSrcDescriptor.get.call(this);
-              }
-            });
-          }
-        } catch (e) {
-          console.warn('[Proxy] Could not intercept HTMLImageElement.src:', e.message);
-        }
-
-        // location.href の上書きを防止（強化版）
-        try {
-          const locationDescriptor = Object.getOwnPropertyDescriptor(window.Location.prototype, 'href');
-          if (locationDescriptor && locationDescriptor.set) {
-            Object.defineProperty(window.Location.prototype, 'href', {
-              set: function(value) {
-                console.log('[Proxy] location.href set attempted:', value);
-                
-                if (!value || typeof value !== 'string') {
-                  return;
-                }
-                
-                // 既にプロキシ化されている場合はそのまま
-                if (isAlreadyProxied(value)) {
-                  console.log('[Proxy] Already proxied, allowing:', value);
-                  return locationDescriptor.set.call(this, value);
-                }
-                
-                // 相対パスやハッシュの場合
-                if (value.startsWith('#') || value.startsWith('?')) {
-                  console.log('[Proxy] Hash/query change, allowing:', value);
-                  return locationDescriptor.set.call(this, value);
-                }
-                
-                // x.com内の遷移の場合のみプロキシ化
-                const absoluteValue = toAbsoluteUrl(value);
-                if (absoluteValue.includes('x.com') || absoluteValue.includes('twitter.com')) {
-                  const proxiedValue = proxyUrl(absoluteValue);
-                  console.log('[Proxy] Redirecting to proxied URL:', proxiedValue);
-                  return locationDescriptor.set.call(this, proxiedValue);
-                } else {
-                  // x.com以外への遷移は許可しない（セキュリティ）
-                  console.warn('[Proxy] Blocked external redirect to:', value);
-                  return;
-                }
-              },
-              get: function() {
-                return window.location.href;
-              }
-            });
-          }
-        } catch (e) {
-          console.warn('[Proxy] Could not intercept location.href:', e.message);
-        }
-
-        // window.location.replace も監視
-        try {
-          const originalReplace = window.location.replace;
-          window.location.replace = function(url) {
-            console.log('[Proxy] location.replace called:', url);
-            
-            if (!url || typeof url !== 'string') {
-              return originalReplace.call(this, url);
-            }
-            
-            if (isAlreadyProxied(url)) {
-              return originalReplace.call(this, url);
-            }
-            
-            const absoluteUrl = toAbsoluteUrl(url);
-            if (absoluteUrl.includes('x.com') || absoluteUrl.includes('twitter.com')) {
-              const proxiedUrl = proxyUrl(absoluteUrl);
-              console.log('[Proxy] Redirecting replace to:', proxiedUrl);
-              return originalReplace.call(this, proxiedUrl);
-            } else {
-              console.warn('[Proxy] Blocked external replace to:', url);
-              return;
-            }
-          };
-        } catch (e) {
-          console.warn('[Proxy] Could not intercept location.replace:', e.message);
-        }
-
-        // window.location.assign も監視
-        try {
-          const originalAssign = window.location.assign;
-          window.location.assign = function(url) {
-            console.log('[Proxy] location.assign called:', url);
-            
-            if (!url || typeof url !== 'string') {
-              return originalAssign.call(this, url);
-            }
-            
-            if (isAlreadyProxied(url)) {
-              return originalAssign.call(this, url);
-            }
-            
-            const absoluteUrl = toAbsoluteUrl(url);
-            if (absoluteUrl.includes('x.com') || absoluteUrl.includes('twitter.com')) {
-              const proxiedUrl = proxyUrl(absoluteUrl);
-              console.log('[Proxy] Redirecting assign to:', proxiedUrl);
-              return originalAssign.call(this, proxiedUrl);
-            } else {
-              console.warn('[Proxy] Blocked external assign to:', url);
-              return;
-            }
-          };
-        } catch (e) {
-          console.warn('[Proxy] Could not intercept location.assign:', e.message);
-        }
-
-        // History API の監視（SPA遷移）- 詳細ログ付き
-        try {
-          const originalPushState = window.history.pushState;
-          window.history.pushState = function(state, title, url) {
-            if (url) {
-              console.log('[Content] 📍 pushState called:', url);
-              console.log('[Content] Current URL:', window.location.href);
-              
-              // 相対URLまたはハッシュはそのまま
-              if (typeof url === 'string' && (url.startsWith('/') || url.startsWith('#') || url.startsWith('?'))) {
-                console.log('[Content] ✅ Relative URL, allowing');
-                return originalPushState.call(this, state, title, url);
-              }
-              
-              // 絶対URLの場合はプロキシ化を確認
-              if (typeof url === 'string' && !isAlreadyProxied(url) && url.startsWith('http')) {
-                const proxiedUrl = proxyUrl(url);
-                console.log('[Content] ✅ pushState proxied:', proxiedUrl);
-                return originalPushState.call(this, state, title, proxiedUrl);
-              }
-            }
-            
-            return originalPushState.call(this, state, title, url);
-          };
-
-          const originalReplaceState = window.history.replaceState;
-          window.history.replaceState = function(state, title, url) {
-            if (url) {
-              console.log('[Content] 📍 replaceState called:', url);
-              console.log('[Content] Current URL:', window.location.href);
-              
-              // 相対URLまたはハッシュはそのまま
-              if (typeof url === 'string' && (url.startsWith('/') || url.startsWith('#') || url.startsWith('?'))) {
-                console.log('[Content] ✅ Relative URL, allowing');
-                return originalReplaceState.call(this, state, title, url);
-              }
-              
-              // 絶対URLの場合はプロキシ化を確認
-              if (typeof url === 'string' && !isAlreadyProxied(url) && url.startsWith('http')) {
-                const proxiedUrl = proxyUrl(url);
-                console.log('[Content] ✅ replaceState proxied:', proxiedUrl);
-                return originalReplaceState.call(this, state, title, proxiedUrl);
-              }
-            }
-            
-            return originalReplaceState.call(this, state, title, url);
-          };
-        } catch (e) {
-          console.warn('[Content] Could not intercept History API:', e.message);
-        }
-
-        // popstate イベントの監視（ブラウザの戻る/進む）
-        window.addEventListener('popstate', function(event) {
-          console.log('[Content] 🔙 popstate event fired');
-          console.log('[Content] Current URL:', window.location.href);
-          console.log('[Content] State:', event.state);
-        });
-
-        // MutationObserver で動的に追加される要素を監視
-        const observer = new MutationObserver((mutations) => {
-          mutations.forEach((mutation) => {
-            mutation.addedNodes.forEach((node) => {
-              if (node.nodeType === 1) { // Element
-                // img タグ
-                if (node.tagName === 'IMG' && node.src && !isAlreadyProxied(node.src)) {
-                  const proxiedSrc = proxyUrl(node.src);
-                  if (proxiedSrc !== node.src) {
-                    node.src = proxiedSrc;
-                  }
-                }
-                // video/audio タグ
-                if ((node.tagName === 'VIDEO' || node.tagName === 'AUDIO') && node.src && !isAlreadyProxied(node.src)) {
-                  const proxiedSrc = proxyUrl(node.src);
-                  if (proxiedSrc !== node.src) {
-                    node.src = proxiedSrc;
-                  }
-                }
-                // source タグ
-                if (node.tagName === 'SOURCE' && node.src && !isAlreadyProxied(node.src)) {
-                  const proxiedSrc = proxyUrl(node.src);
-                  if (proxiedSrc !== node.src) {
-                    node.src = proxiedSrc;
-                  }
-                }
-                // 子要素も処理
-                const imgs = node.querySelectorAll && node.querySelectorAll('img[src], video[src], audio[src], source[src]');
-                if (imgs) {
-                  imgs.forEach((el) => {
-                    if (el.src && !isAlreadyProxied(el.src)) {
-                      const proxiedSrc = proxyUrl(el.src);
-                      if (proxiedSrc !== el.src) {
-                        el.src = proxiedSrc;
-                      }
-                    }
-                  });
-                }
-              }
-            });
-          });
-        });
-
-        observer.observe(document.documentElement, {
-          childList: true,
-          subtree: true
-        });
-
-        // エラー抑制
-        const originalError = console.error;
-        console.error = function(...args) {
-          const msg = args.join(' ');
-          if (msg.includes('GSI') || msg.includes('google')) return;
-          if (msg.includes('404') && msg.includes('loaders.video')) return; // 動画ローダーエラーを抑制
-          return originalError.apply(console, args);
-        };
-
-        const originalWarn = console.warn;
-        console.warn = function(...args) {
-          const msg = args.join(' ');
-          if (msg.includes('GSI') || msg.includes('google')) return;
-          return originalWarn.apply(console, args);
-        };
-
-        // 認証エラーの監視（X.comがリダイレクトする前にキャッチ）
-        let authErrorCount = 0;
-        const originalXHRSend = XMLHttpRequest.prototype.send;
-        XMLHttpRequest.prototype.send = function(...args) {
-          const xhr = this;
-          const originalOnLoad = xhr.onload;
-          
-          xhr.onload = function() {
-            try {
-              if (xhr.status === 401 || xhr.status === 403) {
-                authErrorCount++;
-                console.error('[Proxy] Auth error detected:', xhr.status, xhr.responseURL);
-                
-                if (authErrorCount > 5) {
-                  console.error('[Proxy] Too many auth errors, session may be expired');
-                  
-                  // ユーザーに通知
-                  if (!document.getElementById('proxy-auth-warning')) {
-                    const warning = document.createElement('div');
-                    warning.id = 'proxy-auth-warning';
-                    warning.style.cssText = 'position:fixed;top:20px;right:20px;background:rgba(255,87,87,0.95);color:white;padding:20px;border-radius:8px;z-index:99999;max-width:300px;box-shadow:0 4px 12px rgba(0,0,0,0.3);';
-                    warning.innerHTML = '<strong>⚠️ セッション警告</strong><br><br>認証エラーが複数発生しています。<br>Cookieが期限切れの可能性があります。<br><br><a href="/x-cookie-helper.html" style="color:#fff;text-decoration:underline;">Cookieを再注入</a>';
-                    document.body.appendChild(warning);
-                    
-                    setTimeout(() => warning.remove(), 10000);
-                  }
-                }
-              }
-            } catch (e) {}
-            
-            if (originalOnLoad) {
-              return originalOnLoad.apply(this, arguments);
-            }
-          };
-          
-          return originalXHRSend.apply(this, args);
-        };
-        
-        console.log('[Content] Intercept initialized with advanced media handling and navigation protection');
-      })();
-    </script>
-  `;
-
-  html = html.replace(/<head[^>]*>/i, (match) => match + interceptScript);
-  
-  // Google関連スクリプト削除
-  html = html.replace(/<script[^>]*src=[^>]*google[^>]*>[\s\S]*?<\/script>/gi, '');
-  html = html.replace(/<script[^>]*src=[^>]*gstatic[^>]*>[\s\S]*?<\/script>/gi, '');
-  html = html.replace(/<iframe[^>]*google[^>]*>[\s\S]*?<\/iframe>/gi, '');
-
-  if (!html.includes('charset')) {
-    html = html.replace(/<head[^>]*>/i, '<head><meta charset="UTF-8">');
-  }
-
-  return html;
-}
-
-// ===== 6. PUPPETEER FUNCTIONS =====
-async function loadPuppeteer() {
-  if (process.env.RENDER) {
-    const puppeteerCore = require('puppeteer-core');
-    const chromium = require('@sparticuz/chromium');
-    return { puppeteerCore, chromium, isRender: true };
-  } else {
-    const puppeteerLib = require('puppeteer');
-    return { puppeteerCore: puppeteerLib, chromium: null, isRender: false };
-  }
-}
-
-async function initBrowser() {
-  if (!browser) {
-    try {
-      if (!puppeteer) {
-        puppeteer = await loadPuppeteer();
-      }
-
-      let launchConfig;
-      if (puppeteer.isRender) {
-        const chromium = puppeteer.chromium;
-        launchConfig = {
-          args: [
-            ...chromium.args,
-            '--disable-blink-features=AutomationControlled',
-            '--disable-features=IsolateOrigins,site-per-process'
-          ],
-          defaultViewport: chromium.defaultViewport,
-          executablePath: await chromium.executablePath(),
-          headless: chromium.headless,
-        };
-      } else {
-        launchConfig = {
-          headless: 'new',
-          args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-gpu',
-            '--disable-blink-features=AutomationControlled',
-            '--disable-features=IsolateOrigins,site-per-process'
-          ]
-        };
-      }
-
-      browser = await puppeteer.puppeteerCore.launch(launchConfig);
-      console.log('✅ Browser initialized');
-    } catch (error) {
-      console.error('❌ Browser launch failed:', error.message);
-      throw error;
-    }
-  }
-  return browser;
-}
-
-async function initXLoginPage() {
-  const browserInstance = await initBrowser();
-  const page = await browserInstance.newPage();
-
-  // タイムアウトを延長（X.comは読み込みが遅い）
-  page.setDefaultNavigationTimeout(60000);
-  page.setDefaultTimeout(60000);
-
-  await page.setViewport({ 
-    width: 1920, 
-    height: 1080,
-    deviceScaleFactor: 1
-  });
-
-  await page.setUserAgent(
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-  );
-
-  await page.setExtraHTTPHeaders({
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Cache-Control': 'max-age=0',
-    'Sec-Ch-Ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-    'Sec-Ch-Ua-Mobile': '?0',
-    'Sec-Ch-Ua-Platform': '"Windows"',
-    'Sec-Fetch-Dest': 'document',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'none',
-    'Sec-Fetch-User': '?1',
-    'Upgrade-Insecure-Requests': '1'
-  });
-
-  await page.setRequestInterception(true);
-  page.removeAllListeners('request');
-  
-  page.on('request', (request) => {
+  await page.evaluateOnNewDocument(() => {
+    delete Object.getPrototypeOf(navigator).webdriver;
     if (request.isInterceptResolutionHandled()) {
       return;
     }
@@ -789,9 +87,7 @@ async function initXLoginPage() {
   return page;
 }
 
-// 🆕 xLoginPageの排他制御付き使用
 async function useXLoginPage(callback) {
-  // ページが使用中の場合は待機
   if (xLoginPageBusy) {
     console.log('⏳ xLoginPage is busy, queuing request...');
     return new Promise((resolve) => {
@@ -809,15 +105,14 @@ async function useXLoginPage(callback) {
   } finally {
     xLoginPageBusy = false;
     
-    // キューに待機中のリクエストがあれば処理
     if (xLoginPageQueue.length > 0) {
       const nextRequest = xLoginPageQueue.shift();
       setImmediate(nextRequest);
     }
   }
 }
+}
 
-// Initialize xLoginPage with cached cookies
 (async () => {
   if (cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0) {
     try {
@@ -825,6 +120,13 @@ async function useXLoginPage(callback) {
       xLoginPage = await initXLoginPage();
       await xLoginPage.setCookie(...cachedXCookies);
       console.log('✅ xLoginPage initialized with cached cookies');
+      
+      const currentCookies = await xLoginPage.cookies();
+      console.log('📋 Current cookies in xLoginPage:');
+      currentCookies.forEach(c => {
+        console.log(`   - ${c.name}: ${c.value.substring(0, 20)}...`);
+      });
+      
     } catch (e) {
       console.log('⚠️ Could not initialize xLoginPage:', e.message);
     }
@@ -871,7 +173,9 @@ app.get('/test-cookies', (req, res) => {
         domain: c.domain || 'no-domain',
         value: c.value ? (c.value.substring(0, 20) + '...') : 'no-value',
         hasValue: !!c.value,
-        valueLength: c.value ? c.value.length : 0
+        valueLength: c.value ? c.value.length : 0,
+        expires: c.expires ? new Date(c.expires * 1000).toISOString() : 'session',
+        isExpired: c.expires ? (c.expires * 1000 < Date.now()) : false
       };
     }) : [],
     hasAuthToken: hasCookies ? !!cachedXCookies.find(c => c && c.name === 'auth_token') : false,
@@ -881,7 +185,6 @@ app.get('/test-cookies', (req, res) => {
 
 // ===== 8. PROXY ROUTES =====
 
-// OPTIONS proxy route（CORSプリフライト用）
 app.options(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -891,7 +194,6 @@ app.options(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
   res.status(204).send();
 });
 
-// 🔴 CRITICAL: GET proxy route with Puppeteer
 app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
   try {
     const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
@@ -902,26 +204,22 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
     const parsedUrl = new url.URL(targetUrl);
     const isXDomain = parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com');
     
-    // APIエンドポイントかどうかを判定
     const isApiEndpoint = parsedUrl.hostname.includes('api.x.com') || 
                           parsedUrl.pathname.includes('.json') ||
                           parsedUrl.pathname.includes('graphql');
     
-    // 動画・メディアファイルの判定
     const isMediaFile = parsedUrl.pathname.match(/\.(js|css|json|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|mp4|webm|m3u8|ts|m4s|mpd)$/i) ||
                         parsedUrl.hostname.includes('video.twimg.com') ||
                         parsedUrl.hostname.includes('video-s.twimg.com') ||
                         parsedUrl.hostname.includes('pbs.twimg.com') ||
                         parsedUrl.hostname.includes('abs.twimg.com');
     
-    // HTMLページかどうかを判定（API・メディアは除外）
     const isHTML = !isApiEndpoint && !isMediaFile;
 
     console.log(`📊 Type: isHTML=${isHTML}, isAPI=${isApiEndpoint}, isMedia=${isMediaFile}`);
     
     const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
 
-    // HTMLページの場合はPuppeteerを使用
     if (isHTML) {
       console.log('🌐 Using Puppeteer for HTML page');
       
@@ -930,7 +228,6 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
 
       try {
         if (useXLoginPageShared) {
-          // xLoginPageを使用（キューイングシステムで処理）
           console.log('♻️ Using shared xLoginPage');
           
           const htmlContent = await useXLoginPage(async () => {
@@ -966,7 +263,6 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
           const browserInstance = await initBrowser();
           page = await browserInstance.newPage();
           
-          // タイムアウトを延長
           page.setDefaultNavigationTimeout(60000);
           page.setDefaultTimeout(60000);
           
@@ -975,7 +271,6 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
           );
 
-          // X.com用のCookieをセット
           if (isXDomain && hasCookies) {
             try {
               const validCookies = cachedXCookies.filter(c => c && c.name && c.value);
@@ -989,11 +284,9 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
           }
         }
 
-        // ナビゲーション（X.comは読み込みが遅いので戦略を変更）
         console.log(`🌐 Navigating to: ${targetUrl}`);
         
         if (isXDomain) {
-          // X.com専用の読み込み戦略
           try {
             await page.goto(targetUrl, {
               waitUntil: 'domcontentloaded',
@@ -1004,7 +297,6 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
             console.log('⚠️ Navigation timeout, but DOM may be loaded:', navErr.message);
           }
 
-          // X.comの主要な要素が出現するまで待機（タイムアウト付き）
           try {
             await Promise.race([
               page.waitForSelector('div[data-testid="primaryColumn"]', { timeout: 10000 }),
@@ -1016,10 +308,8 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
             console.log('⚠️ Main content not detected, continuing anyway');
           }
 
-          // さらに少し待機（動的コンテンツの読み込み）
           await new Promise(resolve => setTimeout(resolve, 3000));
         } else {
-          // 通常サイトの読み込み戦略
           try {
             await page.goto(targetUrl, {
               waitUntil: 'networkidle2',
@@ -1032,16 +322,13 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
           await new Promise(resolve => setTimeout(resolve, 2000));
         }
 
-        // HTMLを取得
         const htmlContent = await page.content();
         console.log(`✅ Page loaded successfully (${htmlContent.length} bytes)`);
 
-        // 新しく作成したページをクローズ（xLoginPageは維持）
         if (page && page !== xLoginPage) {
           await page.close();
         }
 
-        // HTMLを書き換えて送信
         const rewrittenHTML = rewriteHTML(htmlContent, targetUrl);
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
         res.setHeader('Access-Control-Allow-Origin', '*');
@@ -1050,17 +337,15 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
       } catch (navError) {
         console.error('❌ Navigation error:', navError.message);
         
-        // abortedエラーの場合は無視（ページ遷移によるキャンセル）
         if (navError.message.includes('aborted') || navError.message.includes('ERR_ABORTED')) {
           console.log('⚠️ Request aborted (likely page navigation), returning empty response');
-          res.status(204).send(); // No Content
+          res.status(204).send();
           if (!useXLoginPageShared && page) {
             await page.close().catch(() => {});
           }
           return;
         }
         
-        // エラーページを表示
         res.status(500).send(`
           <!DOCTYPE html>
           <html>
@@ -1118,13 +403,11 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
           </html>
         `);
         
-        // 新しく作成したページをクローズ
         if (page && page !== xLoginPage) {
           await page.close().catch(() => {});
         }
       }
     } else {
-      // 非HTMLリソース（JS/CSS/画像/API）はaxiosで取得
       console.log('📦 Fetching non-HTML resource with axios');
       
       const headers = {
@@ -1133,9 +416,15 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
         'Referer': `${parsedUrl.protocol}//${parsedUrl.host}/`,
       };
 
-      // X.com用のCookie（APIエンドポイント含む）
       if (isXDomain && hasCookies) {
         try {
+          console.log('🍪 Available cookies:', cachedXCookies.length);
+          cachedXCookies.forEach(c => {
+            if (c && c.name) {
+              console.log(`   - ${c.name}: ${c.value ? 'present' : 'missing'}`);
+            }
+          });
+          
           const cookieString = cachedXCookies
             .filter(c => c && c.name && c.value)
             .map(c => `${c.name}=${c.value}`)
@@ -1144,23 +433,34 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
           if (cookieString) {
             headers['Cookie'] = cookieString;
             console.log('🍪 Using cached cookies for resource');
+            console.log('🍪 Cookie string length:', cookieString.length);
+          } else {
+            console.log('⚠️ No valid cookies to send!');
           }
           
-          // API用の追加ヘッダー
           if (isApiEndpoint) {
             const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
             if (ct0Cookie && ct0Cookie.value) {
               headers['x-csrf-token'] = ct0Cookie.value;
-              console.log('🔐 Added CSRF token for API');
+              console.log('🔐 Added CSRF token for API:', ct0Cookie.value.substring(0, 10) + '...');
+            } else {
+              console.log('⚠️ ct0 cookie not found for API request!');
             }
             
             headers['x-twitter-active-user'] = 'yes';
             headers['x-twitter-client-language'] = 'en';
+            headers['x-twitter-auth-type'] = 'OAuth2Session';
             
-            // GraphQL用
             if (targetUrl.includes('graphql')) {
               headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
               console.log('🔑 Added GraphQL bearer token');
+            }
+            
+            const authToken = cachedXCookies.find(c => c && c.name === 'auth_token');
+            if (authToken && authToken.value) {
+              console.log('✅ auth_token present in cookies');
+            } else {
+              console.log('⚠️ auth_token NOT FOUND - API requests will fail!');
             }
           }
         } catch (e) {
@@ -1183,7 +483,6 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
       if (response.status === 400 || response.status === 404) {
         console.log('❌ Resource Error:', response.status, 'for', targetUrl);
         
-        // 404の場合は空のレスポンスを返す（エラーページではなく）
         if (response.status === 404) {
           res.status(404).send('');
           return;
@@ -1206,7 +505,6 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
   } catch (error) {
     console.error('❌ GET Proxy error:', error.message);
     
-    // abortedエラーは無視
     if (error.message.includes('aborted') || error.message.includes('ERR_ABORTED')) {
       console.log('⚠️ Request aborted, returning 204');
       res.status(204).send();
@@ -1220,7 +518,6 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
   }
 });
 
-// POST proxy route（X API対応強化版）
 app.post(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
   try {
     const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
@@ -1241,7 +538,6 @@ app.post(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
     headers['Origin'] = `${parsedUrl.protocol}//${parsedUrl.host}`;
     headers['Referer'] = `${parsedUrl.protocol}//${parsedUrl.host}/`;
 
-    // X.com用のCookie処理
     if (isXDomain) {
       const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
       
@@ -1258,7 +554,6 @@ app.post(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
             console.log('🍪 Cookie count:', cachedXCookies.length);
           }
           
-          // CSRF トークン（ct0）を x-csrf-token ヘッダーに追加
           const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
           if (ct0Cookie && ct0Cookie.value) {
             headers['x-csrf-token'] = ct0Cookie.value;
@@ -1267,7 +562,6 @@ app.post(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
             console.log('⚠️ ct0 cookie not found!');
           }
           
-          // auth_tokenの確認
           const authToken = cachedXCookies.find(c => c && c.name === 'auth_token');
           if (authToken && authToken.value) {
             console.log('✅ auth_token found');
@@ -1282,12 +576,10 @@ app.post(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
         console.log('❌ No cached cookies available!');
       }
       
-      // X API用の追加ヘッダー
       headers['x-twitter-active-user'] = 'yes';
       headers['x-twitter-client-language'] = 'en';
       headers['x-twitter-auth-type'] = 'OAuth2Session';
       
-      // GraphQL API用のヘッダー
       if (targetUrl.includes('graphql') || targetUrl.includes('UserByScreenName')) {
         headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
         console.log('🔑 Added GraphQL authorization bearer token');
@@ -1333,17 +625,11 @@ app.post(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
     }
 
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token, x-twitter-active-user, x-twitter-client-language');
     res.setHeader('Access-Control-Allow-Credentials', 'true');
 
-    if (contentType.includes('text/html')) {
-      let htmlPost = response.data.toString('utf-8');
-      htmlPost = rewriteHTML(htmlPost, targetUrl);
-      
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.send(htmlPost);
-    } else if (contentType.includes('application/json')) {
+    if (contentType.includes('application/json')) {
       res.setHeader('Content-Type', contentType);
       res.send(response.data);
     } else {
@@ -1352,106 +638,13 @@ app.post(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
     }
 
   } catch (error) {
-    console.error('❌ POST Proxy error:', error.message);
+    console.error('❌ PUT Proxy error:', error.message);
     res.status(500).json({ 
       error: error.message,
       url: req.params.encodedUrl
     });
   }
-});
-
-// PUT proxy route（X API用）
-app.put(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
-  try {
-    const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
-    const targetUrl = decodeProxyUrl(encodedUrl);
-
-    console.log('📡 PUT Proxying:', targetUrl);
-
-    const parsedUrl = new url.URL(targetUrl);
-    const isXDomain = parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com');
-    
-    const headers = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      'Accept': '*/*',
-      'Content-Type': req.headers['content-type'] || 'application/json',
-      'Accept-Language': 'en-US,en;q=0.9',
-    };
-
-    headers['Origin'] = `${parsedUrl.protocol}//${parsedUrl.host}`;
-    headers['Referer'] = `${parsedUrl.protocol}//${parsedUrl.host}/`;
-
-    // X.com用のCookie処理
-    if (isXDomain) {
-      const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
-      
-      if (hasCookies) {
-        try {
-          let cookieString = cachedXCookies
-            .filter(c => c && c.name && c.value)
-            .map(c => `${c.name}=${c.value}`)
-            .join('; ');
-          
-          if (cookieString) {
-            headers['Cookie'] = cookieString;
-            console.log('🍪 Using cached cookies for PUT');
-          }
-          
-          const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
-          if (ct0Cookie && ct0Cookie.value) {
-            headers['x-csrf-token'] = ct0Cookie.value;
-            console.log('🔐 Added x-csrf-token for PUT');
-          }
-        } catch (e) {
-          console.log('⚠️ Cookie error:', e.message);
-        }
-      }
-      
-      headers['x-twitter-active-user'] = 'yes';
-      headers['x-twitter-client-language'] = 'en';
-      headers['x-twitter-auth-type'] = 'OAuth2Session';
-      
-      if (targetUrl.includes('graphql') || targetUrl.includes('strato')) {
-        headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
-        console.log('🔑 Added bearer token for PUT');
-      }
-    }
-
-    if (req.headers.authorization) {
-      headers['Authorization'] = req.headers.authorization;
-    }
-
-    const response = await axios({
-      method: 'PUT',
-      url: targetUrl,
-      headers: headers,
-      data: req.body,
-      responseType: 'arraybuffer',
-      maxRedirects: 5,
-      validateStatus: () => true,
-      timeout: 30000
-    });
-
-    console.log(`📥 PUT Response: ${response.status}`);
-    
-    if (response.status === 400 || response.status === 403 || response.status === 404) {
-      console.log('❌ PUT API Error:', response.status);
-      try {
-        const errorBody = response.data.toString('utf-8');
-        console.log('Error body:', errorBody.substring(0, 300));
-      } catch (e) {
-        console.log('Could not parse error body');
-      }
-    }
-
-    const contentType = response.headers['content-type'] || '';
-
-    if (response.headers['set-cookie']) {
-      res.setHeader('Set-Cookie', response.headers['set-cookie']);
-    }
-
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
+}); 'GET, POST, PUT, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token, x-twitter-active-user, x-twitter-client-language');
     res.setHeader('Access-Control-Allow-Credentials', 'true');
 
@@ -1532,13 +725,11 @@ app.post('/api/x-inject-cookies', async (req, res) => {
       }
     ];
 
-    // メモリとファイルの両方に保存
     cachedXCookies = cookies;
     saveCookiesToFile(cookies);
     console.log('[API] ✅ Cookies cached globally and saved to file');
     console.log('[API] Cookie objects:', JSON.stringify(cookies, null, 2));
 
-    // xLoginPageの初期化
     if (!xLoginPage) {
       try {
         console.log('[API] Creating xLoginPage...');
@@ -1564,7 +755,6 @@ app.post('/api/x-inject-cookies', async (req, res) => {
       }
     }
 
-    // xLoginPageにCookieをセット
     try {
       await xLoginPage.setCookie(...cookies);
       console.log('[API] ✅ Cookies set in xLoginPage');
@@ -1573,7 +763,6 @@ app.post('/api/x-inject-cookies', async (req, res) => {
       console.error('[API] Stack:', e.stack);
     }
 
-    // X.comに移動してCookieを有効化
     let currentUrl = 'N/A';
     let allCookies = [];
     let hasAuthToken = false;
@@ -1723,7 +912,6 @@ app.delete('/api/x-cookies', async (req, res) => {
     cachedXCookies = null;
     console.log('[API] Cookie cache cleared');
 
-    // ファイルも削除
     if (fs.existsSync(COOKIE_FILE)) {
       fs.unlinkSync(COOKIE_FILE);
       console.log('[API] Cookie file deleted');
@@ -1780,10 +968,8 @@ app.get('/health', (req, res) => {
 
 // ===== 10. STATIC FILES & ROOT ROUTE =====
 
-// 🔴 CRITICAL FIX: 静的ファイルをAPI routesの後に配置
 app.use(express.static('public'));
 
-// 明示的な静的ファイルルート
 app.get('/x-cookie-helper.html', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'x-cookie-helper.html'));
 });
@@ -1792,12 +978,10 @@ app.get('/x-login-test.html', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'x-login-test.html'));
 });
 
-// ルートパス（最後に配置）
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// 404エラーハンドラー（すべてのルートの最後）
 app.use((req, res) => {
   console.log('❌ 404 - Route not found:', req.method, req.path);
   res.status(404).json({ 
@@ -1814,7 +998,6 @@ async function testXPageAccess(page) {
   const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
   const results = { tests: [] };
   
-  // Test 1: Xトップページ
   console.log('[X-TEST] Test 1: Accessing https://x.com/');
   try {
     await page.goto('https://x.com/', {
@@ -1840,7 +1023,6 @@ async function testXPageAccess(page) {
     results.tests.push({ page: 'top', error: e.message });
   }
   
-  // Test 2: 特定のユーザープロフィール
   console.log('[X-TEST] Test 2: Accessing https://x.com/elonmusk');
   try {
     await page.goto('https://x.com/elonmusk', {
@@ -1867,7 +1049,6 @@ async function testXPageAccess(page) {
     results.tests.push({ page: 'profile', error: e.message });
   }
   
-  // 結果サマリー
   const blockedCount = results.tests.filter(t => t.hasError).length;
   const successCount = results.tests.filter(t => !t.hasError && !t.error).length;
   
@@ -1901,4 +1082,866 @@ process.on('SIGTERM', async () => {
     await browser.close().catch(() => {});
   }
   process.exit(0);
+});'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token, x-twitter-active-user, x-twitter-client-language');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+
+    if (contentType.includes('text/html')) {
+      let htmlPost = response.data.toString('utf-8');
+      htmlPost = rewriteHTML(htmlPost, targetUrl);
+      
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(htmlPost);
+    } else if (contentType.includes('application/json')) {
+      res.setHeader('Content-Type', contentType);
+      res.send(response.data);
+    } else {
+      res.setHeader('Content-Type', contentType);
+      res.send(response.data);
+    }
+
+  } catch (error) {
+    console.error('❌ POST Proxy error:', error.message);
+    res.status(500).json({ 
+      error: error.message,
+      url: req.params.encodedUrl
+    });
+  }
 });
+
+app.put(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
+  try {
+    const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
+    const targetUrl = decodeProxyUrl(encodedUrl);
+
+    console.log('📡 PUT Proxying:', targetUrl);
+
+    const parsedUrl = new url.URL(targetUrl);
+    const isXDomain = parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com');
+    
+    const headers = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'Accept': '*/*',
+      'Content-Type': req.headers['content-type'] || 'application/json',
+      'Accept-Language': 'en-US,en;q=0.9',
+    };
+
+    headers['Origin'] = `${parsedUrl.protocol}//${parsedUrl.host}`;
+    headers['Referer'] = `${parsedUrl.protocol}//${parsedUrl.host}/`;
+
+    if (isXDomain) {
+      const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
+      
+      if (hasCookies) {
+        try {
+          let cookieString = cachedXCookies
+            .filter(c => c && c.name && c.value)
+            .map(c => `${c.name}=${c.value}`)
+            .join('; ');
+          
+          if (cookieString) {
+            headers['Cookie'] = cookieString;
+            console.log('🍪 Using cached cookies for PUT');
+          }
+          
+          const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
+          if (ct0Cookie && ct0Cookie.value) {
+            headers['x-csrf-token'] = ct0Cookie.value;
+            console.log('🔐 Added x-csrf-token for PUT');
+          }
+        } catch (e) {
+          console.log('⚠️ Cookie error:', e.message);
+        }
+      }
+      
+      headers['x-twitter-active-user'] = 'yes';
+      headers['x-twitter-client-language'] = 'en';
+      headers['x-twitter-auth-type'] = 'OAuth2Session';
+      
+      if (targetUrl.includes('graphql') || targetUrl.includes('strato')) {
+        headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
+        console.log('🔑 Added bearer token for PUT');
+      }
+    }
+
+    if (req.headers.authorization) {
+      headers['Authorization'] = req.headers.authorization;
+    }
+
+    const response = await axios({
+      method: 'PUT',
+      url: targetUrl,
+      headers: headers,
+      data: req.body,
+      responseType: 'arraybuffer',
+      maxRedirects: 5,
+      validateStatus: () => true,
+      timeout: 30000
+    });
+
+    console.log(`📥 PUT Response: ${response.status}`);
+    
+    if (response.status === 400 || response.status === 403 || response.status === 404) {
+      console.log('❌ PUT API Error:', response.status);
+      try {
+        const errorBody = response.data.toString('utf-8');
+        console.log('Error body:', errorBody.substring(0, 300));
+      } catch (e) {
+        console.log('Could not parse error body');
+      }
+    }
+
+    const contentType = response.headers['content-type'] || '';
+
+    if (response.headers['set-cookie']) {
+      res.setHeader('Set-Cookie', response.headers['set-cookie']);
+    }
+
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', // ===== 1. DEPENDENCIES =====
+const express = require('express');
+const cors = require('cors');
+const axios = require('axios');
+const path = require('path');
+const url = require('url');
+const fs = require('fs');
+require('dotenv').config();
+
+// ===== 2. INITIALIZATION =====
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// 変数宣言（ファイル内で一度だけ）
+let browser;
+let puppeteer;
+let xLoginPage = null;
+let cachedXCookies = null;
+let xLoginPageBusy = false; // 🆕 ページ使用中フラグ
+const xLoginPageQueue = []; // 🆕 待機キュー
+
+const COOKIE_FILE = path.join(__dirname, '.x-cookies.json');
+
+// ===== 3. COOKIE PERSISTENCE FUNCTIONS =====
+function saveCookiesToFile(cookies) {
+  try {
+    fs.writeFileSync(COOKIE_FILE, JSON.stringify(cookies, null, 2));
+    console.log('💾 Cookies saved to file');
+  } catch (e) {
+    console.error('❌ Failed to save cookies:', e.message);
+  }
+}
+
+function loadCookiesFromFile() {
+  try {
+    if (fs.existsSync(COOKIE_FILE)) {
+      const data = fs.readFileSync(COOKIE_FILE, 'utf8');
+      const cookies = JSON.parse(data);
+      console.log('📂 Cookies loaded from file');
+      return cookies;
+    }
+  } catch (e) {
+    console.error('❌ Failed to load cookies:', e.message);
+  }
+  return null;
+}
+
+// Load cookies on startup
+cachedXCookies = loadCookiesFromFile();
+if (cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0) {
+  console.log('✅ Cached cookies restored from file');
+  console.log(`   Cookie count: ${cachedXCookies.length}`);
+}
+
+// ===== 4. MIDDLEWARE =====
+app.use(cors());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// ===== 5. UTILITY FUNCTIONS =====
+function encodeProxyUrl(targetUrl) {
+  return Buffer.from(targetUrl).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+function decodeProxyUrl(encoded) {
+  const base64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
+  return Buffer.from(base64, 'base64').toString('utf-8');
+}
+
+// プロキシパスを変更（フィルタリング回避）
+const PROXY_PATH = '/proxy/'; // 標準的なプロキシパス
+
+function rewriteHTML(html, baseUrl) {
+  const urlObj = new url.URL(baseUrl);
+  const origin = `${urlObj.protocol}//${urlObj.host}`;
+  const proxyOrigin = process.env.RENDER ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : `http://localhost:${PORT}`;
+
+  // 既にプロキシ化されているかチェック
+  function isAlreadyProxied(urlString) {
+    return urlString.includes('/proxy/') || urlString.includes(proxyOrigin);
+  }
+
+  // href書き換え
+  html = html.replace(/href\s*=\s*["']([^"']+)["']/gi, (match, href) => {
+    if (href.startsWith('javascript:') || href.startsWith('#') || 
+        href.startsWith('mailto:') || href.startsWith('tel:') || 
+        isAlreadyProxied(href)) {
+      return match;
+    }
+    
+    let absoluteUrl = href;
+    try {
+      if (href.startsWith('//')) {
+        absoluteUrl = urlObj.protocol + href;
+      } else if (href.startsWith('/')) {
+        absoluteUrl = origin + href;
+      } else if (!href.startsWith('http')) {
+        absoluteUrl = new url.URL(href, baseUrl).href;
+      }
+      return `href="/proxy/${encodeProxyUrl(absoluteUrl)}"`;
+    } catch (e) {
+      return match;
+    }
+  });
+
+  // src書き換え
+  html = html.replace(/src\s*=\s*["']([^"']+)["']/gi, (match, src) => {
+    if (src.startsWith('data:') || src.startsWith('blob:') || isAlreadyProxied(src)) {
+      return match;
+    }
+    
+    let absoluteUrl = src;
+    try {
+      if (src.startsWith('//')) {
+        absoluteUrl = urlObj.protocol + src;
+      } else if (src.startsWith('/')) {
+        absoluteUrl = origin + src;
+      } else if (!src.startsWith('http')) {
+        absoluteUrl = new url.URL(src, baseUrl).href;
+      }
+      return `src="/proxy/${encodeProxyUrl(absoluteUrl)}"`;
+    } catch (e) {
+      return match;
+    }
+  });
+
+  // video source タグの書き換え（動画用）
+  html = html.replace(/<source\s+([^>]*?)src\s*=\s*["']([^"']+)["']([^>]*?)>/gi, (match, before, src, after) => {
+    if (src.startsWith('data:') || src.startsWith('blob:') || isAlreadyProxied(src)) {
+      return match;
+    }
+    
+    let absoluteUrl = src;
+    try {
+      if (src.startsWith('//')) {
+        absoluteUrl = urlObj.protocol + src;
+      } else if (src.startsWith('/')) {
+        absoluteUrl = origin + src;
+      } else if (!src.startsWith('http')) {
+        absoluteUrl = new url.URL(src, baseUrl).href;
+      }
+      return `<source ${before}src="/proxy/${encodeProxyUrl(absoluteUrl)}"${after}>`;
+    } catch (e) {
+      return match;
+    }
+  });
+
+  // action書き換え
+  html = html.replace(/action\s*=\s*["']([^"']+)["']/gi, (match, action) => {
+    if (isAlreadyProxied(action)) {
+      return match;
+    }
+    
+    let absoluteUrl = action;
+    try {
+      if (action.startsWith('//')) {
+        absoluteUrl = urlObj.protocol + action;
+      } else if (action.startsWith('/')) {
+        absoluteUrl = origin + action;
+      } else if (!action.startsWith('http')) {
+        absoluteUrl = new url.URL(action, baseUrl).href;
+      }
+      return `action="/proxy/${encodeProxyUrl(absoluteUrl)}"`;
+    } catch (e) {
+      return match;
+    }
+  });
+
+  // インターセプトスクリプト（無限ループ防止強化版）
+  const interceptScript = `
+    <script>
+      (function() {
+        const PROXY_ORIGIN = '${proxyOrigin}';
+        const TARGET_ORIGIN = '${origin}';
+        const PROXY_PATH = '${PROXY_PATH}';
+        
+        let redirectAttempts = 0;
+        const MAX_REDIRECT_ATTEMPTS = 5;
+        
+        console.log('[Content] Initializing for', TARGET_ORIGIN);
+        console.log('[Content] Current URL:', window.location.href);
+        
+        Object.defineProperty(window, 'google', {
+          get: () => undefined,
+          set: () => false,
+          configurable: false
+        });
+        
+        Object.defineProperty(window, 'gapi', {
+          get: () => undefined,
+          set: () => false,
+          configurable: false
+        });
+        
+        function toAbsoluteUrl(relativeUrl) {
+          if (!relativeUrl) return relativeUrl;
+          
+          if (relativeUrl.startsWith('http://') || relativeUrl.startsWith('https://')) {
+            return relativeUrl;
+          }
+          if (relativeUrl.startsWith('//')) {
+            return 'https:' + relativeUrl;
+          }
+          if (relativeUrl.startsWith('/')) {
+            return TARGET_ORIGIN + relativeUrl;
+          }
+          return TARGET_ORIGIN + '/' + relativeUrl;
+        }
+        
+        function encodeProxyUrl(url) {
+          const base64 = btoa(url).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=/g, '');
+          return PROXY_ORIGIN + PROXY_PATH + base64;
+        }
+        
+        function isAlreadyProxied(url) {
+          if (!url) return false;
+          return url.includes(PROXY_ORIGIN) || 
+                 url.includes(PROXY_PATH) ||
+                 url.startsWith(PROXY_PATH);
+        }
+        
+        function isMediaUrl(url) {
+          if (!url) return false;
+          try {
+            const urlLower = url.toLowerCase();
+            return urlLower.includes('video.twimg.com') ||
+                   urlLower.includes('video-s.twimg.com') ||
+                   urlLower.includes('pbs.twimg.com') ||
+                   urlLower.includes('abs.twimg.com') ||
+                   urlLower.match(/\\.(m3u8|ts|m4s|mp4|webm|jpg|png|gif)($|\\?)/);
+          } catch (e) {
+            return false;
+          }
+        }
+
+        function proxyUrl(url) {
+          if (!url || typeof url !== 'string') return url;
+          if (isAlreadyProxied(url)) return url;
+          if (url.startsWith('blob:') || url.startsWith('data:')) return url;
+          
+          const absoluteUrl = toAbsoluteUrl(url);
+          if (absoluteUrl.startsWith('http')) {
+            return encodeProxyUrl(absoluteUrl);
+          }
+          return url;
+        }
+        
+        const originalFetch = window.fetch;
+        window.fetch = function(resource, options) {
+          let url = typeof resource === 'string' ? resource : (resource.url || resource);
+          
+          if (url && (url.includes('google.com') || url.includes('gstatic.com'))) {
+            return Promise.reject(new Error('Blocked'));
+          }
+          
+          if (url && (url.startsWith('blob:') || url.startsWith('data:'))) {
+            return originalFetch.call(this, resource, options);
+          }
+          
+          if (isAlreadyProxied(url)) {
+            return originalFetch.call(this, resource, options);
+          }
+          
+          const proxiedUrl = proxyUrl(url);
+          if (proxiedUrl !== url) {
+            const newOptions = Object.assign({}, options);
+            if (newOptions.mode === 'cors') {
+              delete newOptions.mode;
+            }
+            
+            if (typeof resource === 'string') {
+              return originalFetch.call(this, proxiedUrl, newOptions);
+            } else {
+              return originalFetch.call(this, new Request(proxiedUrl, newOptions));
+            }
+          }
+          
+          return originalFetch.call(this, resource, options);
+        };
+
+        const originalOpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+          if (typeof url === 'string') {
+            if (url.includes('google.com') || url.includes('gstatic.com')) {
+              throw new Error('Blocked');
+            }
+            
+            if (!url.startsWith('blob:') && !url.startsWith('data:')) {
+              if (!isAlreadyProxied(url)) {
+                const proxiedUrl = proxyUrl(url);
+                if (proxiedUrl !== url) {
+                  return originalOpen.call(this, method, proxiedUrl, ...rest);
+                }
+              }
+            }
+          }
+          
+          return originalOpen.call(this, method, url, ...rest);
+        };
+
+        try {
+          const mediaSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
+          if (mediaSrcDescriptor && mediaSrcDescriptor.set) {
+            Object.defineProperty(HTMLMediaElement.prototype, 'src', {
+              set: function(value) {
+                const proxiedValue = proxyUrl(value);
+                console.log('[Proxy] Media src:', value, '->', proxiedValue);
+                return mediaSrcDescriptor.set.call(this, proxiedValue);
+              },
+              get: function() {
+                return mediaSrcDescriptor.get.call(this);
+              }
+            });
+          }
+        } catch (e) {
+          console.warn('[Proxy] Could not intercept HTMLMediaElement.src:', e.message);
+        }
+
+        try {
+          const imageSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+          if (imageSrcDescriptor && imageSrcDescriptor.set) {
+            Object.defineProperty(HTMLImageElement.prototype, 'src', {
+              set: function(value) {
+                const proxiedValue = proxyUrl(value);
+                return imageSrcDescriptor.set.call(this, proxiedValue);
+              },
+              get: function() {
+                return imageSrcDescriptor.get.call(this);
+              }
+            });
+          }
+        } catch (e) {
+          console.warn('[Proxy] Could not intercept HTMLImageElement.src:', e.message);
+        }
+
+        try {
+          const locationDescriptor = Object.getOwnPropertyDescriptor(window.Location.prototype, 'href');
+          if (locationDescriptor && locationDescriptor.set) {
+            Object.defineProperty(window.Location.prototype, 'href', {
+              set: function(value) {
+                console.log('[Proxy] location.href set attempted:', value);
+                console.log('[Proxy] Redirect attempts:', redirectAttempts);
+                
+                if (!value || typeof value !== 'string') {
+                  return;
+                }
+                
+                if (redirectAttempts >= MAX_REDIRECT_ATTEMPTS) {
+                  console.error('[Proxy] Too many redirect attempts - BLOCKING');
+                  return;
+                }
+                
+                if (isAlreadyProxied(value)) {
+                  console.log('[Proxy] Already proxied, allowing:', value);
+                  redirectAttempts++;
+                  return locationDescriptor.set.call(this, value);
+                }
+                
+                if (value.startsWith('#') || value.startsWith('?')) {
+                  console.log('[Proxy] Hash/query change, allowing:', value);
+                  return locationDescriptor.set.call(this, value);
+                }
+                
+                if (value === window.location.href || value === window.location.pathname) {
+                  console.warn('[Proxy] Blocking same-page redirect (loop prevention)');
+                  return;
+                }
+                
+                const absoluteValue = toAbsoluteUrl(value);
+                if (absoluteValue.includes('x.com') || absoluteValue.includes('twitter.com')) {
+                  const proxiedValue = proxyUrl(absoluteValue);
+                  console.log('[Proxy] Redirecting to proxied URL:', proxiedValue);
+                  redirectAttempts++;
+                  return locationDescriptor.set.call(this, proxiedValue);
+                } else {
+                  console.warn('[Proxy] Blocked external redirect to:', value);
+                  return;
+                }
+              },
+              get: function() {
+                return window.location.href;
+              }
+            });
+          }
+        } catch (e) {
+          console.warn('[Proxy] Could not intercept location.href:', e.message);
+        }
+
+        try {
+          const originalReplace = window.location.replace;
+          window.location.replace = function(url) {
+            console.log('[Proxy] location.replace called:', url);
+            
+            if (redirectAttempts >= MAX_REDIRECT_ATTEMPTS) {
+              console.error('[Proxy] Too many redirect attempts via replace - BLOCKING');
+              return;
+            }
+            
+            if (!url || typeof url !== 'string') {
+              return originalReplace.call(this, url);
+            }
+            
+            if (isAlreadyProxied(url)) {
+              redirectAttempts++;
+              return originalReplace.call(this, url);
+            }
+            
+            if (url === window.location.href) {
+              console.warn('[Proxy] Blocking same-page replace (loop prevention)');
+              return;
+            }
+            
+            const absoluteUrl = toAbsoluteUrl(url);
+            if (absoluteUrl.includes('x.com') || absoluteUrl.includes('twitter.com')) {
+              const proxiedUrl = proxyUrl(absoluteUrl);
+              console.log('[Proxy] Redirecting replace to:', proxiedUrl);
+              redirectAttempts++;
+              return originalReplace.call(this, proxiedUrl);
+            } else {
+              console.warn('[Proxy] Blocked external replace to:', url);
+              return;
+            }
+          };
+        } catch (e) {
+          console.warn('[Proxy] Could not intercept location.replace:', e.message);
+        }
+
+        try {
+          const originalAssign = window.location.assign;
+          window.location.assign = function(url) {
+            console.log('[Proxy] location.assign called:', url);
+            
+            if (redirectAttempts >= MAX_REDIRECT_ATTEMPTS) {
+              console.error('[Proxy] Too many redirect attempts via assign - BLOCKING');
+              return;
+            }
+            
+            if (!url || typeof url !== 'string') {
+              return originalAssign.call(this, url);
+            }
+            
+            if (isAlreadyProxied(url)) {
+              redirectAttempts++;
+              return originalAssign.call(this, url);
+            }
+            
+            if (url === window.location.href) {
+              console.warn('[Proxy] Blocking same-page assign (loop prevention)');
+              return;
+            }
+            
+            const absoluteUrl = toAbsoluteUrl(url);
+            if (absoluteUrl.includes('x.com') || absoluteUrl.includes('twitter.com')) {
+              const proxiedUrl = proxyUrl(absoluteUrl);
+              console.log('[Proxy] Redirecting assign to:', proxiedUrl);
+              redirectAttempts++;
+              return originalAssign.call(this, proxiedUrl);
+            } else {
+              console.warn('[Proxy] Blocked external assign to:', url);
+              return;
+            }
+          };
+        } catch (e) {
+          console.warn('[Proxy] Could not intercept location.assign:', e.message);
+        }
+
+        try {
+          const originalPushState = window.history.pushState;
+          let pushStateCount = 0;
+          const MAX_PUSHSTATE = 10;
+          
+          window.history.pushState = function(state, title, url) {
+            if (url) {
+              console.log('[Content] pushState called:', url);
+              console.log('[Content] Current URL:', window.location.href);
+              
+              if (pushStateCount >= MAX_PUSHSTATE) {
+                console.error('[Content] Too many pushState calls - BLOCKING');
+                return;
+              }
+              
+              if (typeof url === 'string' && (url.startsWith('/') || url.startsWith('#') || url.startsWith('?'))) {
+                console.log('[Content] Relative URL, allowing');
+                pushStateCount++;
+                return originalPushState.call(this, state, title, url);
+              }
+              
+              if (typeof url === 'string' && !isAlreadyProxied(url) && url.startsWith('http')) {
+                const proxiedUrl = proxyUrl(url);
+                console.log('[Content] pushState proxied:', proxiedUrl);
+                pushStateCount++;
+                return originalPushState.call(this, state, title, proxiedUrl);
+              }
+            }
+            
+            return originalPushState.call(this, state, title, url);
+          };
+
+          const originalReplaceState = window.history.replaceState;
+          let replaceStateCount = 0;
+          const MAX_REPLACESTATE = 10;
+          
+          window.history.replaceState = function(state, title, url) {
+            if (url) {
+              console.log('[Content] replaceState called:', url);
+              console.log('[Content] Current URL:', window.location.href);
+              
+              if (replaceStateCount >= MAX_REPLACESTATE) {
+                console.error('[Content] Too many replaceState calls - BLOCKING');
+                return;
+              }
+              
+              if (typeof url === 'string' && (url.startsWith('/') || url.startsWith('#') || url.startsWith('?'))) {
+                console.log('[Content] Relative URL, allowing');
+                replaceStateCount++;
+                return originalReplaceState.call(this, state, title, url);
+              }
+              
+              if (typeof url === 'string' && !isAlreadyProxied(url) && url.startsWith('http')) {
+                const proxiedUrl = proxyUrl(url);
+                console.log('[Content] replaceState proxied:', proxiedUrl);
+                replaceStateCount++;
+                return originalReplaceState.call(this, state, title, proxiedUrl);
+              }
+            }
+            
+            return originalReplaceState.call(this, state, title, url);
+          };
+        } catch (e) {
+          console.warn('[Content] Could not intercept History API:', e.message);
+        }
+
+        window.addEventListener('popstate', function(event) {
+          console.log('[Content] popstate event fired');
+          console.log('[Content] Current URL:', window.location.href);
+          console.log('[Content] State:', event.state);
+        });
+
+        const observer = new MutationObserver((mutations) => {
+          mutations.forEach((mutation) => {
+            mutation.addedNodes.forEach((node) => {
+              if (node.nodeType === 1) {
+                if (node.tagName === 'IMG' && node.src && !isAlreadyProxied(node.src)) {
+                  const proxiedSrc = proxyUrl(node.src);
+                  if (proxiedSrc !== node.src) {
+                    node.src = proxiedSrc;
+                  }
+                }
+                if ((node.tagName === 'VIDEO' || node.tagName === 'AUDIO') && node.src && !isAlreadyProxied(node.src)) {
+                  const proxiedSrc = proxyUrl(node.src);
+                  if (proxiedSrc !== node.src) {
+                    node.src = proxiedSrc;
+                  }
+                }
+                if (node.tagName === 'SOURCE' && node.src && !isAlreadyProxied(node.src)) {
+                  const proxiedSrc = proxyUrl(node.src);
+                  if (proxiedSrc !== node.src) {
+                    node.src = proxiedSrc;
+                  }
+                }
+                const imgs = node.querySelectorAll && node.querySelectorAll('img[src], video[src], audio[src], source[src]');
+                if (imgs) {
+                  imgs.forEach((el) => {
+                    if (el.src && !isAlreadyProxied(el.src)) {
+                      const proxiedSrc = proxyUrl(el.src);
+                      if (proxiedSrc !== el.src) {
+                        el.src = proxiedSrc;
+                      }
+                    }
+                  });
+                }
+              }
+            });
+          });
+        });
+
+        observer.observe(document.documentElement, {
+          childList: true,
+          subtree: true
+        });
+
+        const originalError = console.error;
+        console.error = function(...args) {
+          const msg = args.join(' ');
+          if (msg.includes('GSI') || msg.includes('google')) return;
+          if (msg.includes('404') && msg.includes('loaders.video')) return;
+          return originalError.apply(console, args);
+        };
+
+        const originalWarn = console.warn;
+        console.warn = function(...args) {
+          const msg = args.join(' ');
+          if (msg.includes('GSI') || msg.includes('google')) return;
+          return originalWarn.apply(console, args);
+        };
+
+        let authErrorCount = 0;
+        const originalXHRSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.send = function(...args) {
+          const xhr = this;
+          const originalOnLoad = xhr.onload;
+          
+          xhr.onload = function() {
+            try {
+              if (xhr.status === 401 || xhr.status === 403) {
+                authErrorCount++;
+                console.error('[Proxy] Auth error detected:', xhr.status, xhr.responseURL);
+                
+                if (authErrorCount > 5) {
+                  console.error('[Proxy] Too many auth errors, session may be expired');
+                  
+                  if (!document.getElementById('proxy-auth-warning')) {
+                    const warning = document.createElement('div');
+                    warning.id = 'proxy-auth-warning';
+                    warning.style.cssText = 'position:fixed;top:20px;right:20px;background:rgba(255,87,87,0.95);color:white;padding:20px;border-radius:8px;z-index:99999;max-width:300px;box-shadow:0 4px 12px rgba(0,0,0,0.3);';
+                    warning.innerHTML = '<strong>⚠️ セッション警告</strong><br><br>認証エラーが複数発生しています。<br>Cookieが期限切れの可能性があります。<br><br><a href="/x-cookie-helper.html" style="color:#fff;text-decoration:underline;">Cookieを再注入</a>';
+                    document.body.appendChild(warning);
+                    
+                    setTimeout(() => warning.remove(), 10000);
+                  }
+                }
+              }
+            } catch (e) {}
+            
+            if (originalOnLoad) {
+              return originalOnLoad.apply(this, arguments);
+            }
+          };
+          
+          return originalXHRSend.apply(this, args);
+        };
+        
+        setTimeout(() => {
+          console.log('[Proxy] Resetting redirect counter');
+          redirectAttempts = 0;
+        }, 10000);
+        
+        console.log('[Content] Intercept initialized with advanced media handling and navigation protection');
+      })();
+    </script>
+  `;
+
+  html = html.replace(/<head[^>]*>/i, (match) => match + interceptScript);
+  
+  html = html.replace(/<script[^>]*src=[^>]*google[^>]*>[\s\S]*?<\/script>/gi, '');
+  html = html.replace(/<script[^>]*src=[^>]*gstatic[^>]*>[\s\S]*?<\/script>/gi, '');
+  html = html.replace(/<iframe[^>]*google[^>]*>[\s\S]*?<\/iframe>/gi, '');
+
+  if (!html.includes('charset')) {
+    html = html.replace(/<head[^>]*>/i, '<head><meta charset="UTF-8">');
+  }
+
+  return html;
+}
+
+// ===== 6. PUPPETEER FUNCTIONS =====
+async function loadPuppeteer() {
+  if (process.env.RENDER) {
+    const puppeteerCore = require('puppeteer-core');
+    const chromium = require('@sparticuz/chromium');
+    return { puppeteerCore, chromium, isRender: true };
+  } else {
+    const puppeteerLib = require('puppeteer');
+    return { puppeteerCore: puppeteerLib, chromium: null, isRender: false };
+  }
+}
+
+async function initBrowser() {
+  if (!browser) {
+    try {
+      if (!puppeteer) {
+        puppeteer = await loadPuppeteer();
+      }
+
+      let launchConfig;
+      if (puppeteer.isRender) {
+        const chromium = puppeteer.chromium;
+        launchConfig = {
+          args: [
+            ...chromium.args,
+            '--disable-blink-features=AutomationControlled',
+            '--disable-features=IsolateOrigins,site-per-process'
+          ],
+          defaultViewport: chromium.defaultViewport,
+          executablePath: await chromium.executablePath(),
+          headless: chromium.headless,
+        };
+      } else {
+        launchConfig = {
+          headless: 'new',
+          args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--disable-blink-features=AutomationControlled',
+            '--disable-features=IsolateOrigins,site-per-process'
+          ]
+        };
+      }
+
+      browser = await puppeteer.puppeteerCore.launch(launchConfig);
+      console.log('✅ Browser initialized');
+    } catch (error) {
+      console.error('❌ Browser launch failed:', error.message);
+      throw error;
+    }
+  }
+  return browser;
+}
+
+async function initXLoginPage() {
+  const browserInstance = await initBrowser();
+  const page = await browserInstance.newPage();
+
+  page.setDefaultNavigationTimeout(60000);
+  page.setDefaultTimeout(60000);
+
+  await page.setViewport({ 
+    width: 1920, 
+    height: 1080,
+    deviceScaleFactor: 1
+  });
+
+  await page.setUserAgent(
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+  );
+
+  await page.setExtraHTTPHeaders({
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Cache-Control': 'max-age=0',
+    'Sec-Ch-Ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+    'Sec-Ch-Ua-Mobile': '?0',
+    'Sec-Ch-Ua-Platform': '"Windows"',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Upgrade-Insecure-Requests': '1'
+  });
+
+  await page.setRequestInterception(true);
+  page.removeAllListeners('request');
+  
+  page.on('request', (request) => {
