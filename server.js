@@ -729,7 +729,7 @@ function rewriteHTML(html, baseUrl) {
           redirectBlockEnabled = false;
           console.log('[Proxy] ⏰ Redirect protection auto-disabled after 5s');
         }, 5000);
-        
+
         console.log('[Content] Intercept initialized with advanced media handling and navigation protection');
       })();
     </script>
@@ -1900,6 +1900,38 @@ app.get('/api/x-test', async (req, res) => {
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
+});
+
+// ===== 🆕 X.com特有のパス処理 =====
+// /home や /explore などへの直接アクセスをプロキシ経由にリダイレクト
+app.get('/home', (req, res) => {
+  console.log('🔄 Redirecting /home to proxied X.com');
+  const targetUrl = 'https://x.com/home';
+  const encodedUrl = encodeProxyUrl(targetUrl);
+  res.redirect(`${PROXY_PATH}${encodedUrl}`);
+});
+
+app.get('/explore', (req, res) => {
+  console.log('🔄 Redirecting /explore to proxied X.com');
+  const targetUrl = 'https://x.com/explore';
+  const encodedUrl = encodeProxyUrl(targetUrl);
+  res.redirect(`${PROXY_PATH}${encodedUrl}`);
+});
+
+app.get('/notifications', (req, res) => {
+  console.log('🔄 Redirecting /notifications to proxied X.com');
+  const targetUrl = 'https://x.com/notifications';
+  const encodedUrl = encodeProxyUrl(targetUrl);
+  res.redirect(`${PROXY_PATH}${encodedUrl}`);
+});
+
+// 動画ファイルの直接アクセスをプロキシ経由でリダイレクト
+app.get('/amplify_video/*', async (req, res) => {
+  const videoPath = req.path;
+  console.log('🎥 Redirecting video:', videoPath);
+  const targetUrl = `https://video.twimg.com${videoPath}`;
+  const encodedUrl = encodeProxyUrl(targetUrl);
+  res.redirect(`${PROXY_PATH}${encodedUrl}`);
 });
 
 // ===== 10. STATIC FILES & ROOT ROUTE =====
