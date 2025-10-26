@@ -346,48 +346,122 @@ function rewriteHTML(html, baseUrl) {
         }
 
         // location.href の上書きを防止（強化版）
+        // location.href インターセプト(相対パス対応強化版)
         try {
           const locationDescriptor = Object.getOwnPropertyDescriptor(window.Location.prototype, 'href');
           if (locationDescriptor && locationDescriptor.set) {
             Object.defineProperty(window.Location.prototype, 'href', {
               set: function(value) {
-                console.log('[Proxy] location.href set attempted:', value);
+                console.log('[Proxy] 🔴 location.href set:', value);
                 
                 if (!value || typeof value !== 'string') {
+                  console.warn('[Proxy] Invalid value, blocking');
                   return;
                 }
                 
-                // 既にプロキシ化されている場合はそのまま
                 if (isAlreadyProxied(value)) {
-                  console.log('[Proxy] Already proxied, allowing:', value);
+                  console.log('[Proxy] ✅ Already proxied');
                   return locationDescriptor.set.call(this, value);
                 }
                 
-                // 相対パスやハッシュの場合
-                if (value.startsWith('#') || value.startsWith('?')) {
-                  console.log('[Proxy] Hash/query change, allowing:', value);
+                if (value.startsWith('#')) {
+                  console.log('[Proxy] ✅ Hash change');
                   return locationDescriptor.set.call(this, value);
                 }
                 
-                // x.com内の遷移の場合のみプロキシ化
+                // 🆕 相対パス（/home, /settings）を絶対URLに変換
+                if (value.startsWith('/') || value.startsWith('?')) {
+                  const absoluteValue = TARGET_ORIGIN + (value.startsWith('/') ? value : '/' + value);
+                  const proxiedValue = proxyUrl(absoluteValue);
+                  console.log('[Proxy] ✅ Relative->Absolute:', value, '->', proxiedValue);
+                  return locationDescriptor.set.call(this, proxiedValue);
+                }
+                
                 const absoluteValue = toAbsoluteUrl(value);
                 if (absoluteValue.includes('x.com') || absoluteValue.includes('twitter.com')) {
                   const proxiedValue = proxyUrl(absoluteValue);
-                  console.log('[Proxy] Redirecting to proxied URL:', proxiedValue);
+                  console.log('[Proxy] ✅ Proxied:', proxiedValue);
                   return locationDescriptor.set.call(this, proxiedValue);
                 } else {
-                  // x.com以外への遷移は許可しない（セキュリティ）
-                  console.warn('[Proxy] Blocked external redirect to:', value);
+                  console.warn('[Proxy] ❌ Blocked external:', value);
                   return;
                 }
               },
-              get: function() {
-                return window.location.href;
-              }
+              get: function() { return window.location.href; }
             });
           }
         } catch (e) {
           console.warn('[Proxy] Could not intercept location.href:', e.message);
+        }
+
+        // window.location.replace の監視（相対パス対応）
+        try {
+          const originalReplace = window.location.replace;
+          window.location.replace = function(url) {
+            console.log('[Proxy] 🔴 location.replace:', url);
+            
+            if (!url || typeof url !== 'string') {
+              return originalReplace.call(this, url);
+            }
+            
+            if (isAlreadyProxied(url)) {
+              return originalReplace.call(this, url);
+            }
+            
+            // 🆕 相対パス対応
+            if (url.startsWith('/') || url.startsWith('?')) {
+              const absoluteUrl = TARGET_ORIGIN + (url.startsWith('/') ? url : '/' + url);
+              const proxiedUrl = proxyUrl(absoluteUrl);
+              console.log('[Proxy] ✅ Relative replace:', proxiedUrl);
+              return originalReplace.call(this, proxiedUrl);
+            }
+            
+            const absoluteUrl = toAbsoluteUrl(url);
+            if (absoluteUrl.includes('x.com') || absoluteUrl.includes('twitter.com')) {
+              const proxiedUrl = proxyUrl(absoluteUrl);
+              return originalReplace.call(this, proxiedUrl);
+            } else {
+              console.warn('[Proxy] ❌ Blocked replace');
+              return;
+            }
+          };
+        } catch (e) {
+          console.warn('[Proxy] Could not intercept location.replace:', e.message);
+        }
+
+        // window.location.assign の監視（相対パス対応）
+        try {
+          const originalAssign = window.location.assign;
+          window.location.assign = function(url) {
+            console.log('[Proxy] 🔴 location.assign:', url);
+            
+            if (!url || typeof url !== 'string') {
+              return originalAssign.call(this, url);
+            }
+            
+            if (isAlreadyProxied(url)) {
+              return originalAssign.call(this, url);
+            }
+            
+            // 🆕 相対パス対応
+            if (url.startsWith('/') || url.startsWith('?')) {
+              const absoluteUrl = TARGET_ORIGIN + (url.startsWith('/') ? url : '/' + url);
+              const proxiedUrl = proxyUrl(absoluteUrl);
+              console.log('[Proxy] ✅ Relative assign:', proxiedUrl);
+              return originalAssign.call(this, proxiedUrl);
+            }
+            
+            const absoluteUrl = toAbsoluteUrl(url);
+            if (absoluteUrl.includes('x.com') || absoluteUrl.includes('twitter.com')) {
+              const proxiedUrl = proxyUrl(absoluteUrl);
+              return originalAssign.call(this, proxiedUrl);
+            } else {
+              console.warn('[Proxy] ❌ Blocked assign');
+              return;
+            }
+          };
+        } catch (e) {
+          console.warn('[Proxy] Could not intercept location.assign:', e.message);
         }
 
         // window.location.replace も監視
