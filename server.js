@@ -1620,17 +1620,123 @@ app.post('/api/proxy', async (req, res) => {
 });
 
 app.post('/api/x-inject-cookies', async (req, res) => {
-  const { authToken, ct0Token } = req.body;
+  const { authToken, ct0Token, allCookies } = req.body;
 
+  // 🆕 完全なCookie配列を受け取る（推奨）
+  if (allCookies && Array.isArray(allCookies) && allCookies.length > 0) {
+    console.log('[API] Injecting ALL cookies from array:', allCookies.length);
+    
+    try {
+      // Cookieの形式を正規化
+      const formattedCookies = allCookies.map(c => ({
+        name: c.name,
+        value: c.value,
+        domain: c.domain || '.x.com',
+        path: c.path || '/',
+        httpOnly: c.httpOnly !== undefined ? c.httpOnly : (c.name === 'auth_token' || c.name === '_twitter_sess'),
+        secure: c.secure !== undefined ? c.secure : true,
+        sameSite: c.sameSite || (c.name === 'ct0' ? 'Lax' : 'None'),
+        expires: c.expires || Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60)
+      }));
+
+      // メモリとファイルの両方に保存
+      cachedXCookies = formattedCookies;
+      saveCookiesToFile(formattedCookies);
+      console.log('[API] ✅ All cookies cached:', formattedCookies.length);
+      console.log('[API] Cookie names:', formattedCookies.map(c => c.name).join(', '));
+
+      // xLoginPageの初期化
+      if (!xLoginPage) {
+        try {
+          console.log('[API] Creating xLoginPage...');
+          xLoginPage = await initXLoginPage();
+          console.log('[API] ✅ xLoginPage created');
+        } catch (initError) {
+          console.error('[API] ⚠️ Failed to create xLoginPage:', initError.message);
+          return res.json({
+            success: true,
+            message: `${formattedCookies.length} cookies cached (xLoginPage creation skipped)`,
+            cached: true,
+            persisted: true,
+            hasXLoginPage: false,
+            cookieCount: formattedCookies.length,
+            cookieNames: formattedCookies.map(c => c.name),
+            warning: 'xLoginPage creation failed, but cookies will work in proxy requests'
+          });
+        }
+      }
+
+      // xLoginPageにCookieをセット
+      if (xLoginPage) {
+        try {
+          await xLoginPage.setCookie(...formattedCookies);
+          console.log('[API] ✅ Cookies set in xLoginPage');
+        } catch (e) {
+          console.log('[API] ⚠️ Could not set cookies in page:', e.message);
+        }
+      }
+
+      // X.comに移動してCookieを有効化（オプショナル）
+      let currentUrl = 'N/A';
+      let pageCookies = [];
+      let hasAuthToken = false;
+
+      try {
+        if (xLoginPage) {
+          console.log('[API] Navigating to X.com to activate cookies...');
+          await xLoginPage.goto('https://x.com/', {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000
+          }).catch(() => {});
+          
+          await new Promise(r => setTimeout(r, 2000));
+          
+          currentUrl = xLoginPage.url();
+          pageCookies = await xLoginPage.cookies();
+          hasAuthToken = pageCookies.some(c => c && c.name === 'auth_token');
+          
+          console.log('[API] Current URL:', currentUrl);
+          console.log('[API] Has auth_token:', hasAuthToken);
+          console.log('[API] Total cookies in page:', pageCookies.length);
+        }
+      } catch (navError) {
+        console.log('[API] ⚠️ Navigation skipped:', navError.message);
+      }
+
+      return res.json({
+        success: true,
+        message: `${formattedCookies.length} cookies injected successfully`,
+        isLoggedIn: hasAuthToken,
+        currentUrl,
+        cached: true,
+        persisted: true,
+        hasXLoginPage: !!xLoginPage,
+        cookieCount: formattedCookies.length,
+        cookieNames: formattedCookies.map(c => c.name),
+        note: 'Cookies will persist across server restarts'
+      });
+
+    } catch (error) {
+      console.error('[API] Error processing cookies:', error.message);
+      console.error('[API] Stack:', error.stack);
+      return res.status(500).json({ 
+        success: false, 
+        error: error.message,
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      });
+    }
+  }
+
+  // 従来の方法（auth_token + ct0のみ）- 後方互換性のため残す
   if (!authToken || !ct0Token) {
     return res.status(400).json({ 
       success: false,
-      error: 'authToken and ct0Token are required' 
+      error: 'authToken and ct0Token are required, or provide allCookies array' 
     });
   }
 
   try {
-    console.log('[API] Injecting X cookies...');
+    console.log('[API] Injecting basic cookies (auth_token + ct0)...');
     console.log('[API] authToken length:', authToken.length);
     console.log('[API] ct0Token length:', ct0Token.length);
 
@@ -1656,126 +1762,51 @@ app.post('/api/x-inject-cookies', async (req, res) => {
       }
     ];
 
-    // メモリとファイルの両方に保存
     cachedXCookies = cookies;
     saveCookiesToFile(cookies);
-    console.log('[API] ✅ Cookies cached globally and saved to file');
-    console.log('[API] Cookie objects:', JSON.stringify(cookies, null, 2));
+    console.log('[API] ✅ Basic cookies cached');
 
-    // xLoginPageの初期化
     if (!xLoginPage) {
       try {
-        console.log('[API] Creating xLoginPage...');
         xLoginPage = await initXLoginPage();
         console.log('[API] ✅ xLoginPage created');
       } catch (initError) {
-        console.error('[API] ❌ Failed to create xLoginPage:', initError.message);
-        console.error('[API] Stack:', initError.stack);
+        console.error('[API] ⚠️ Failed to create xLoginPage:', initError.message);
         return res.json({
           success: true,
-          message: 'Cookies cached (xLoginPage creation failed)',
-          warning: initError.message,
+          message: 'Basic cookies cached (xLoginPage creation skipped)',
           cached: true,
           persisted: true,
           hasXLoginPage: false,
-          cookieData: {
-            authTokenLength: authToken.length,
-            ct0TokenLength: ct0Token.length,
-            cookiesStored: cookies.length
-          },
-          note: 'Cookies will still work in proxy requests'
+          cookieCount: 2,
+          warning: 'Only 2 cookies provided. Some features may not work. Use the Cookie Helper to input more cookies.'
         });
       }
     }
 
-    // xLoginPageにCookieをセット
-    try {
-      await xLoginPage.setCookie(...cookies);
-      console.log('[API] ✅ Cookies set in xLoginPage');
-    } catch (e) {
-      console.log('[API] ⚠️ Could not set cookies in page:', e.message);
-      console.error('[API] Stack:', e.stack);
+    if (xLoginPage) {
+      try {
+        await xLoginPage.setCookie(...cookies);
+        console.log('[API] ✅ Cookies set in xLoginPage');
+      } catch (e) {
+        console.log('[API] ⚠️ Could not set cookies:', e.message);
+      }
     }
 
-    // X.comに移動してCookieを有効化
-    let currentUrl = 'N/A';
-    let allCookies = [];
-    let hasAuthToken = false;
-
-    try {
-      console.log('[API] Navigating to X.com to activate cookies...');
-      await xLoginPage.goto('https://x.com/', {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000
-      });
-      
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      
-      currentUrl = xLoginPage.url();
-      allCookies = await xLoginPage.cookies();
-      hasAuthToken = allCookies.some(c => c && c.name === 'auth_token');
-
-      console.log('[API] Current URL:', currentUrl);
-      console.log('[API] Has auth_token:', hasAuthToken);
-      console.log('[API] Total cookies:', allCookies.length);
-      console.log('[API] Cookie names:', allCookies.map(c => c.name).join(', '));
-
-      return res.json({
-        success: true,
-        message: 'Cookies injected, cached, and persisted successfully',
-        isLoggedIn: hasAuthToken,
-        currentUrl,
-        cached: true,
-        persisted: true,
-        hasXLoginPage: true,
-        cookieCount: allCookies.length,
-        cookies: allCookies.map(c => ({
-          name: c.name,
-          domain: c.domain
-        })),
-        injectedCookies: {
-          authToken: authToken.substring(0, 10) + '...',
-          ct0Token: ct0Token.substring(0, 10) + '...'
-        },
-        note: 'Cookies will persist across server restarts'
-      });
-
-    } catch (navError) {
-      console.log('[API] ⚠️ Navigation failed (cookies still cached):', navError.message);
-      console.error('[API] Stack:', navError.stack);
-      
-      return res.json({
-        success: true,
-        message: 'Cookies cached and persisted (navigation skipped)',
-        warning: navError.message,
-        cached: true,
-        persisted: true,
-        hasXLoginPage: !!xLoginPage,
-        cookieCount: cookies.length,
-        injectedCookies: {
-          authToken: authToken.substring(0, 10) + '...',
-          ct0Token: ct0Token.substring(0, 10) + '...'
-        },
-        note: 'Cookies will be used in proxy requests and persist across restarts'
-      });
-    }
+    return res.json({
+      success: true,
+      message: 'Basic cookies injected',
+      cached: true,
+      persisted: true,
+      hasXLoginPage: !!xLoginPage,
+      cookieCount: 2,
+      cookieNames: ['auth_token', 'ct0'],
+      warning: '⚠️ Only 2 cookies provided. Some API features may not work correctly. Please use the Cookie Helper page to input all cookies for best results.'
+    });
 
   } catch (error) {
     console.error('[API] Cookie injection error:', error.message);
     console.error('[API] Stack:', error.stack);
-    
-    const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
-    if (hasCookies) {
-      return res.json({
-        success: true,
-        message: 'Cookies cached (verification skipped)',
-        warning: error.message,
-        cached: true,
-        persisted: true,
-        hasXLoginPage: !!xLoginPage
-      });
-    }
-
     return res.status(500).json({
       success: false,
       error: 'Cookie injection failed',
@@ -1902,37 +1933,47 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
-// ===== 🆕 X.com特有のパス処理 =====
-// /home や /explore などへの直接アクセスをプロキシ経由にリダイレクト
+// ===== 🆕 X.COM SPECIFIC PATH HANDLING =====
+// X.comの相対パスへの直接アクセスをプロキシ経由にリダイレクト
+
 app.get('/home', (req, res) => {
   console.log('🔄 Redirecting /home to proxied X.com');
   const targetUrl = 'https://x.com/home';
   const encodedUrl = encodeProxyUrl(targetUrl);
-  res.redirect(`${PROXY_PATH}${encodedUrl}`);
+  res.redirect(302, `${PROXY_PATH}${encodedUrl}`);
 });
 
 app.get('/explore', (req, res) => {
   console.log('🔄 Redirecting /explore to proxied X.com');
   const targetUrl = 'https://x.com/explore';
   const encodedUrl = encodeProxyUrl(targetUrl);
-  res.redirect(`${PROXY_PATH}${encodedUrl}`);
+  res.redirect(302, `${PROXY_PATH}${encodedUrl}`);
 });
 
 app.get('/notifications', (req, res) => {
   console.log('🔄 Redirecting /notifications to proxied X.com');
   const targetUrl = 'https://x.com/notifications';
   const encodedUrl = encodeProxyUrl(targetUrl);
-  res.redirect(`${PROXY_PATH}${encodedUrl}`);
+  res.redirect(302, `${PROXY_PATH}${encodedUrl}`);
 });
 
-// 動画ファイルの直接アクセスをプロキシ経由でリダイレクト
-app.get('/amplify_video/*', async (req, res) => {
+app.get('/messages', (req, res) => {
+  console.log('🔄 Redirecting /messages to proxied X.com');
+  const targetUrl = 'https://x.com/messages';
+  const encodedUrl = encodeProxyUrl(targetUrl);
+  res.redirect(302, `${PROXY_PATH}${encodedUrl}`);
+});
+
+// 動画ファイルの直接アクセスをプロキシ経由に
+app.get('/amplify_video/*', (req, res) => {
   const videoPath = req.path;
   console.log('🎥 Redirecting video:', videoPath);
   const targetUrl = `https://video.twimg.com${videoPath}`;
   const encodedUrl = encodeProxyUrl(targetUrl);
-  res.redirect(`${PROXY_PATH}${encodedUrl}`);
+  res.redirect(302, `${PROXY_PATH}${encodedUrl}`);
 });
+
+console.log('✅ X.com path handlers registered');
 
 // ===== 10. STATIC FILES & ROOT ROUTE =====
 

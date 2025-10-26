@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>X Cookie Helper</title>
+  <title>X Cookie Helper - Complete</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -13,7 +13,7 @@
       padding: 40px 20px;
       min-height: 100vh;
     }
-    .container { max-width: 800px; margin: 0 auto; }
+    .container { max-width: 900px; margin: 0 auto; }
     h1 {
       font-size: 32px;
       margin-bottom: 20px;
@@ -29,8 +29,29 @@
       padding: 30px;
       margin-bottom: 20px;
     }
+    .tabs {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+    }
+    .tab {
+      padding: 10px 20px;
+      background: transparent;
+      border: none;
+      color: rgba(255,255,255,0.5);
+      cursor: pointer;
+      font-size: 14px;
+      border-bottom: 2px solid transparent;
+    }
+    .tab.active {
+      color: #fff;
+      border-bottom-color: #b0b0b0;
+    }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
     .step {
-      margin-bottom: 30px;
+      margin-bottom: 25px;
     }
     .step h2 {
       font-size: 18px;
@@ -67,11 +88,11 @@
       background: rgba(255,255,255,0.05);
       color: #fff;
       border-radius: 6px;
-      font-size: 14px;
+      font-size: 13px;
       font-family: 'Courier New', monospace;
     }
     textarea {
-      min-height: 80px;
+      min-height: 120px;
       resize: vertical;
     }
     input:focus, textarea:focus {
@@ -116,12 +137,16 @@
       word-wrap: break-word;
       color: rgba(255,255,255,0.8);
     }
-    code {
-      background: rgba(0,0,0,0.3);
-      padding: 2px 6px;
-      border-radius: 3px;
+    code, pre.code-block {
+      background: rgba(0,0,0,0.4);
+      padding: 12px;
+      border-radius: 4px;
       font-family: 'Courier New', monospace;
-      font-size: 13px;
+      font-size: 12px;
+      display: block;
+      overflow-x: auto;
+      margin: 10px 0;
+      color: #b0b0b0;
     }
     .warning {
       background: rgba(255,193,7,0.1);
@@ -132,6 +157,14 @@
       color: rgba(255,255,255,0.9);
       font-size: 13px;
     }
+    .badge {
+      display: inline-block;
+      padding: 4px 8px;
+      background: rgba(176,176,176,0.2);
+      border-radius: 4px;
+      font-size: 11px;
+      margin-left: 8px;
+    }
   </style>
 </head>
 <body>
@@ -139,48 +172,104 @@
     <h1>🍪 X Cookie Helper</h1>
     
     <div class="card">
-      <div class="step">
-        <h2>📋 概要</h2>
-        <p>XへのログインをProxyで使用するには、ブラウザから手動でログインして、Cookieをこのサーバーに注入する必要があります。</p>
+      <div class="tabs">
+        <button class="tab active" onclick="switchTab('complete')">
+          完全なCookie <span class="badge">推奨</span>
+        </button>
+        <button class="tab" onclick="switchTab('basic')">
+          基本Cookie
+        </button>
       </div>
 
-      <div class="step">
-        <h2>ステップ1: Xにログイン</h2>
-        <ol>
-          <li>新しいタブで <a href="https://x.com/i/flow/login" target="_blank">https://x.com/i/flow/login</a> を開く</li>
-          <li>通常通りログインする</li>
-          <li>ログインが完了したら次のステップへ</li>
-        </ol>
+      <!-- 完全なCookieタブ -->
+      <div id="complete-tab" class="tab-content active">
+        <div class="step">
+          <h2>📋 概要</h2>
+          <p>すべてのCookieを注入することで、X.comの全機能が正常に動作します（API、動画、画像など）。</p>
+        </div>
+
+        <div class="step">
+          <h2>ステップ1: Xにログイン</h2>
+          <ol>
+            <li>新しいタブで <a href="https://x.com/i/flow/login" target="_blank">https://x.com/i/flow/login</a> を開く</li>
+            <li>通常通りログインする</li>
+            <li>ログインが完了したら次のステップへ</li>
+          </ol>
+        </div>
+
+        <div class="step">
+          <h2>ステップ2: Cookieを一括取得</h2>
+          <ol>
+            <li>Xのタブで <code>F12</code> を押してDevToolsを開く</li>
+            <li><strong>Console</strong> タブをクリック</li>
+            <li>以下のコードを貼り付けて <code>Enter</code> を押す：</li>
+          </ol>
+          
+          <pre class="code-block">copy(JSON.stringify(document.cookie.split('; ').map(c => {
+  const [name, ...valueParts] = c.split('=');
+  return {
+    name: name,
+    value: valueParts.join('='),
+    domain: '.x.com',
+    path: '/',
+    secure: true
+  };
+})))</pre>
+          
+          <p style="margin-top: 10px;">✅ コピーされました！次のステップへ</p>
+        </div>
+
+        <div class="step">
+          <h2>ステップ3: Cookieを注入</h2>
+          
+          <label for="allCookiesInput">取得したCookie配列を貼り付け:</label>
+          <textarea id="allCookiesInput" placeholder='[{"name":"auth_token","value":"..."},{"name":"ct0","value":"..."},...]'></textarea>
+          
+          <button id="injectAllBtn">完全なCookieを注入</button>
+        </div>
+
+        <div id="completeResult" class="result"></div>
       </div>
 
-      <div class="step">
-        <h2>ステップ2: Cookieを取得</h2>
-        <ol>
-          <li>Xのタブで <code>F12</code> を押してDevToolsを開く</li>
-          <li><strong>Application</strong> タブ（または <strong>Storage</strong>）をクリック</li>
-          <li>左側の <strong>Cookies</strong> → <strong>https://x.com</strong> を選択</li>
-          <li><code>auth_token</code> を探して、<strong>Value</strong>列の値をコピー</li>
-          <li><code>ct0</code> を探して、<strong>Value</strong>列の値をコピー</li>
-        </ol>
-      </div>
+      <!-- 基本Cookieタブ -->
+      <div id="basic-tab" class="tab-content">
+        <div class="warning">
+          ⚠️ <strong>警告:</strong> 基本Cookie（auth_token + ct0のみ）では一部の機能が動作しない可能性があります。完全なCookieの使用を推奨します。
+        </div>
 
-      <div class="warning">
-        ⚠️ <strong>セキュリティ警告:</strong> これらのCookieは重要な認証情報です。他人と共有しないでください。
-      </div>
+        <div class="step">
+          <h2>ステップ1: Xにログイン</h2>
+          <ol>
+            <li>新しいタブで <a href="https://x.com/i/flow/login" target="_blank">https://x.com/i/flow/login</a> を開く</li>
+            <li>通常通りログインする</li>
+          </ol>
+        </div>
 
-      <div class="step">
-        <h2>ステップ3: Cookieを注入</h2>
-        
-        <label for="authToken">auth_token の値</label>
-        <textarea id="authToken" placeholder="長い英数字の文字列..."></textarea>
-        
-        <label for="ct0Token">ct0 の値</label>
-        <input type="text" id="ct0Token" placeholder="英数字の文字列...">
-        
-        <button id="injectBtn">Cookieを注入</button>
-      </div>
+        <div class="step">
+          <h2>ステップ2: Cookieを取得</h2>
+          <ol>
+            <li>Xのタブで <code>F12</code> を押してDevToolsを開く</li>
+            <li><strong>Application</strong> タブ（または <strong>Storage</strong>）をクリック</li>
+            <li>左側の <strong>Cookies</strong> → <strong>https://x.com</strong> を選択</li>
+            <li><code>auth_token</code> を探して、<strong>Value</strong>列の値をコピー</li>
+            <li><code>ct0</code> を探して、<strong>Value</strong>列の値をコピー</li>
+          </ol>
+        </div>
 
-      <div id="result" class="result"></div>
+        <div class="step">
+          <h2>ステップ3: Cookieを注入</h2>
+          
+          <label for="authToken">auth_token の値</label>
+          <textarea id="authToken" placeholder="長い英数字の文字列..."></textarea>
+          
+          <label for="ct0Token">ct0 の値</label>
+          <input type="text" id="ct0Token" placeholder="英数字の文字列...">
+          
+          <button id="injectBasicBtn">基本Cookieを注入</button>
+        </div>
+
+        <div id="basicResult" class="result"></div>
+      </div>
     </div>
 
     <div class="card">
@@ -188,32 +277,106 @@
       <p style="font-size: 13px; line-height: 1.8; color: rgba(255,255,255,0.7);">
         <strong>Cookieが見つからない場合:</strong><br>
         • Xに正しくログインできているか確認<br>
-        • DevToolsで「x.com」ドメインを選択しているか確認<br>
-        • Cookieがフィルタされていないか確認<br><br>
+        • DevToolsで「x.com」ドメインを選択しているか確認<br><br>
         
         <strong>注入が失敗する場合:</strong><br>
         • Cookieの値が完全にコピーされているか確認<br>
         • 余分な空白や改行が含まれていないか確認<br>
-        • Cookieの有効期限が切れていないか確認
+        • Cookieの有効期限が切れていないか確認（再ログインしてみる）<br><br>
+        
+        <strong>APIエラーが出る場合:</strong><br>
+        • 「完全なCookie」タブを使用してすべてのCookieを注入<br>
+        • 基本Cookieでは一部の機能が動作しません
       </p>
     </div>
   </div>
 
   <script>
-    const injectBtn = document.getElementById('injectBtn');
-    const result = document.getElementById('result');
+    function switchTab(tab) {
+      // タブボタンの切り替え
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      event.target.classList.add('active');
+      
+      // コンテンツの切り替え
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      document.getElementById(`${tab}-tab`).classList.add('active');
+    }
 
-    injectBtn.addEventListener('click', async () => {
+    // 完全なCookie注入
+    document.getElementById('injectAllBtn').addEventListener('click', async () => {
+      const input = document.getElementById('allCookiesInput').value.trim();
+      const btn = document.getElementById('injectAllBtn');
+      const result = document.getElementById('completeResult');
+      
+      if (!input) {
+        showResult(result, '❌ Cookie配列を貼り付けてください', 'error');
+        return;
+      }
+      
+      btn.disabled = true;
+      btn.textContent = '注入中...';
+      
+      try {
+        const cookies = JSON.parse(input);
+        
+        if (!Array.isArray(cookies) || cookies.length === 0) {
+          showResult(result, '❌ 有効なCookie配列ではありません', 'error');
+          btn.disabled = false;
+          btn.textContent = '完全なCookieを注入';
+          return;
+        }
+        
+        const response = await fetch('/api/x-inject-cookies', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ allCookies: cookies })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+          showResult(
+            result,
+            `✅ Cookie注入成功!\n\n` +
+            `Cookie数: ${data.cookieCount}\n` +
+            `Cookies: ${data.cookieNames.join(', ')}\n\n` +
+            `これでProxyからXにログイン状態でアクセスできます！\n\n` +
+            `使用方法:\n` +
+            `1. トップページ (/) でXのURLを入力\n` +
+            `2. 「Go」ボタンをクリック\n` +
+            `3. ログイン状態で表示されます`,
+            'success'
+          );
+        } else {
+          showResult(result, `❌ ${data.error || data.message}`, 'error');
+        }
+      } catch (error) {
+        showResult(
+          result,
+          `❌ エラー: ${error.message}\n\n` +
+          `JSON形式が正しいか確認してください。`,
+          'error'
+        );
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '完全なCookieを注入';
+      }
+    });
+
+    // 基本Cookie注入
+    document.getElementById('injectBasicBtn').addEventListener('click', async () => {
       const authToken = document.getElementById('authToken').value.trim();
       const ct0Token = document.getElementById('ct0Token').value.trim();
+      const btn = document.getElementById('injectBasicBtn');
+      const result = document.getElementById('basicResult');
 
       if (!authToken || !ct0Token) {
-        showResult('❌ auth_tokenとct0の両方を入力してください', 'error');
+        showResult(result, '❌ auth_tokenとct0の両方を入力してください', 'error');
         return;
       }
 
-      injectBtn.disabled = true;
-      injectBtn.textContent = '注入中...';
+      btn.disabled = true;
+      btn.textContent = '注入中...';
 
       try {
         const response = await fetch('/api/x-inject-cookies', {
@@ -226,10 +389,9 @@
 
         if (data.success) {
           showResult(
+            result,
             `✅ Cookie注入成功!\n\n` +
-            `ログイン状態: ${data.isLoggedIn ? 'ログイン済み ✓' : '未ログイン'}\n` +
-            `現在のURL: ${data.currentUrl}\n` +
-            `Cookie数: ${data.cookies.length}\n\n` +
+            `${data.warning ? '⚠️ ' + data.warning + '\n\n' : ''}` +
             `これでProxyからXにログイン状態でアクセスできます！\n\n` +
             `使用方法:\n` +
             `1. トップページ (/) でXのURLを入力\n` +
@@ -238,30 +400,24 @@
             'success'
           );
         } else {
-          showResult(
-            `❌ Cookie注入失敗\n\n` +
-            `エラー: ${data.message || data.error}\n\n` +
-            `Cookieの値が正しいか確認してください。\n` +
-            `または、Cookieの有効期限が切れている可能性があります。`,
-            'error'
-          );
+          showResult(result, `❌ ${data.error || data.message}`, 'error');
         }
       } catch (error) {
         showResult(
+          result,
           `❌ リクエストエラー: ${error.message}\n\n` +
-          `サーバーに接続できませんでした。\n` +
-          `サーバーが起動しているか確認してください。`,
+          `サーバーに接続できませんでした。`,
           'error'
         );
       } finally {
-        injectBtn.disabled = false;
-        injectBtn.textContent = 'Cookieを注入';
+        btn.disabled = false;
+        btn.textContent = '基本Cookieを注入';
       }
     });
 
-    function showResult(text, type) {
-      result.innerHTML = `<pre>${text}</pre>`;
-      result.className = `result ${type} active`;
+    function showResult(element, text, type) {
+      element.innerHTML = `<pre>${text}</pre>`;
+      element.className = `result ${type} active`;
     }
   </script>
 </body>
