@@ -178,6 +178,19 @@ function rewriteHTML(html, baseUrl) {
         const PROXY_PATH = '${PROXY_PATH}';
         
         console.log('[Content] Initializing for', TARGET_ORIGIN);
+        // 🆕 リダイレクト阻止の強化版（デバッグモード）
+        let redirectBlockEnabled = true;
+        const redirectLog = [];
+        
+        window.__proxyDebug = {
+          redirectLog,
+          enableRedirect: () => { redirectBlockEnabled = false; console.log('✅ Redirect enabled'); },
+          disableRedirect: () => { redirectBlockEnabled = true; console.log('❌ Redirect disabled'); },
+          showLog: () => { console.table(redirectLog); }
+        };
+        
+        console.log('[Proxy] 🛡️ Redirect protection ACTIVE');
+        console.log('[Proxy] Use window.__proxyDebug to control');
         
         // Google無効化
         Object.defineProperty(window, 'google', {
@@ -352,37 +365,69 @@ function rewriteHTML(html, baseUrl) {
           if (locationDescriptor && locationDescriptor.set) {
             Object.defineProperty(window.Location.prototype, 'href', {
               set: function(value) {
+                const logEntry = {
+                  time: new Date().toISOString(),
+                  value,
+                  type: 'location.href',
+                  blocked: false
+                };
+                
                 console.log('[Proxy] 🔴 location.href set:', value);
                 
                 if (!value || typeof value !== 'string') {
-                  console.warn('[Proxy] Invalid value, blocking');
+                  logEntry.blocked = true;
+                  logEntry.reason = 'Invalid value';
+                  redirectLog.push(logEntry);
+                  console.warn('[Proxy] ❌ Invalid value');
+                  return;
+                }
+                
+                // 🆕 デバッグモード：すべてのリダイレクトをブロック
+                if (redirectBlockEnabled && !value.startsWith('#')) {
+                  logEntry.blocked = true;
+                  logEntry.reason = 'Redirect protection active';
+                  redirectLog.push(logEntry);
+                  console.warn('[Proxy] 🛡️ BLOCKED redirect to:', value);
                   return;
                 }
                 
                 if (isAlreadyProxied(value)) {
+                  logEntry.reason = 'Already proxied';
+                  redirectLog.push(logEntry);
                   console.log('[Proxy] ✅ Already proxied');
                   return locationDescriptor.set.call(this, value);
                 }
                 
                 if (value.startsWith('#')) {
+                  logEntry.reason = 'Hash change';
+                  redirectLog.push(logEntry);
                   console.log('[Proxy] ✅ Hash change');
                   return locationDescriptor.set.call(this, value);
                 }
                 
-                // 🆕 相対パス（/home, /settings）を絶対URLに変換
                 if (value.startsWith('/') || value.startsWith('?')) {
                   const absoluteValue = TARGET_ORIGIN + (value.startsWith('/') ? value : '/' + value);
                   const proxiedValue = proxyUrl(absoluteValue);
-                  console.log('[Proxy] ✅ Relative->Absolute:', value, '->', proxiedValue);
+                  logEntry.original = value;
+                  logEntry.proxied = proxiedValue;
+                  logEntry.reason = 'Relative path converted';
+                  redirectLog.push(logEntry);
+                  console.log('[Proxy] ✅ Relative->Proxied:', proxiedValue);
                   return locationDescriptor.set.call(this, proxiedValue);
                 }
                 
                 const absoluteValue = toAbsoluteUrl(value);
                 if (absoluteValue.includes('x.com') || absoluteValue.includes('twitter.com')) {
                   const proxiedValue = proxyUrl(absoluteValue);
+                  logEntry.proxied = proxiedValue;
+                  logEntry.reason = 'X.com URL proxied';
+                  redirectLog.push(logEntry);
                   console.log('[Proxy] ✅ Proxied:', proxiedValue);
                   return locationDescriptor.set.call(this, proxiedValue);
                 } else {
+                  logEntry.blocked = true;
+                  logEntry.reason = 'External URL';
+                  redirectLog.push(logEntry);
                   console.warn('[Proxy] ❌ Blocked external:', value);
                   return;
                 }
@@ -679,6 +724,11 @@ function rewriteHTML(html, baseUrl) {
           
           return originalXHRSend.apply(this, args);
         };
+        // 🆕 5秒後にリダイレクト保護を解除（ページ読み込み完了後）
+        setTimeout(() => {
+          redirectBlockEnabled = false;
+          console.log('[Proxy] ⏰ Redirect protection auto-disabled after 5s');
+        }, 5000);
         
         console.log('[Content] Intercept initialized with advanced media handling and navigation protection');
       })();
