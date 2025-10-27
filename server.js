@@ -169,7 +169,7 @@ function rewriteHTML(html, baseUrl) {
   });
 
   // CSP追加
-  const cspMeta = `<meta http-equiv="Content-Security-Policy" content="connect-src 'self' ${proxyOrigin} blob: data: *; default-src 'self' 'unsafe-inline' 'unsafe-eval' ${proxyOrigin} *; img-src * data: blob:; media-src * blob: data:; script-src 'self' 'unsafe-inline' 'unsafe-eval' ${proxyOrigin} *; style-src 'self' 'unsafe-inline' *;">`;
+  const cspMeta = `<meta http-equiv="Content-Security-Policy" content="connect-src 'self' ${proxyOrigin} blob: data: *; default-src 'self' 'unsafe-inline' 'unsafe-eval' ${proxyOrigin} *; img-src * data: blob:; media-src * blob: data:; script-src 'self' 'unsafe-inline' 'unsafe-eval' ${proxyOrigin} * blob:; style-src 'self' 'unsafe-inline' *; worker-src 'self' blob:;">`;
 
   // 緊急インターセプト
   const earlyInterceptScript = `
@@ -248,12 +248,16 @@ function rewriteHTML(html, baseUrl) {
           return url;
         }
         
-        // location無効化
-        Object.defineProperty(window.location, 'href', {
-          get: function() { return window.location.href; },
-          set: function(value) { console.log('[Proxy] 🛑 BLOCKED location.href =', value); return true; },
-          configurable: false
-        });
+        // locationç„¡åŠ¹åŒ–（エラーハンドリング付き）
+try {
+  Object.defineProperty(window.location, 'href', {
+    get: function() { return window.location.href; },
+    set: function(value) { console.log('[Proxy] 🛑 BLOCKED location.href =', value); return true; },
+    configurable: false
+  });
+} catch (e) {
+  console.warn('[Proxy] Could not override location.href:', e.message);
+}
         
         window.location.replace = function(url) {
           console.log('[Proxy] 🛑 BLOCKED location.replace:', url);
