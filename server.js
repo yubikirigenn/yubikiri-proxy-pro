@@ -606,10 +606,15 @@ app.options(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
 
 // 🔴 CRITICAL: GET proxy route with Puppeteer
 app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
+  console.log('🔵 [PROXY] GET request received');
+  console.log('🔵 [PROXY] params:', req.params);
+  console.log('🔵 [PROXY] path:', req.path);
+  
   try {
     const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
+    console.log('🔵 [PROXY] encodedUrl:', encodedUrl.substring(0, 100) + '...');
+    
     const targetUrl = decodeProxyUrl(encodedUrl);
-
     console.log('📡 GET Proxying:', targetUrl);
 
     const parsedUrl = new url.URL(targetUrl);
@@ -1586,10 +1591,13 @@ app.get('/', (req, res) => {
 // 404エラーハンドラー（すべてのルートの最後）
 app.use((req, res) => {
   console.log('❌ 404 - Route not found:', req.method, req.path);
+  console.log('❌ Full URL:', req.originalUrl);
+  console.log('❌ Headers:', req.headers);
   res.status(404).json({ 
     error: 'Route not found',
     path: req.path,
-    method: req.method
+    method: req.method,
+    originalUrl: req.originalUrl
   });
 });
 
