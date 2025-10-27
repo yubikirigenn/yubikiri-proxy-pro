@@ -78,7 +78,6 @@ function rewriteHTML(html, baseUrl) {
   const origin = `${urlObj.protocol}//${urlObj.host}`;
   const proxyOrigin = process.env.RENDER ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : `http://localhost:${PORT}`;
 
-  // 既にプロキシ化されているかチェック
   function isAlreadyProxied(urlString) {
     return urlString.includes('/proxy/') || urlString.includes(proxyOrigin);
   }
@@ -127,7 +126,7 @@ function rewriteHTML(html, baseUrl) {
     }
   });
 
-  // video source タグの書き換え（動画用）
+  // video source書き換え
   html = html.replace(/<source\s+([^>]*?)src\s*=\s*["']([^"']+)["']([^>]*?)>/gi, (match, before, src, after) => {
     if (src.startsWith('data:') || src.startsWith('blob:') || isAlreadyProxied(src)) {
       return match;
@@ -169,10 +168,10 @@ function rewriteHTML(html, baseUrl) {
     }
   });
 
-  // 🔴 CRITICAL STEP 1: CSP（Content Security Policy）の追加
+  // CSP追加
   const cspMeta = `<meta http-equiv="Content-Security-Policy" content="connect-src 'self' ${proxyOrigin} blob: data: *; default-src 'self' 'unsafe-inline' 'unsafe-eval' ${proxyOrigin} *; img-src * data: blob:; media-src * blob: data:; script-src 'self' 'unsafe-inline' 'unsafe-eval' ${proxyOrigin} *; style-src 'self' 'unsafe-inline' *;">`;
 
-  // 🔴 CRITICAL STEP 2: 緊急インターセプトスクリプト（最優先実行）
+  // 緊急インターセプト
   const earlyInterceptScript = `
     <script>
       (function() {
@@ -187,14 +186,12 @@ function rewriteHTML(html, baseUrl) {
           return PROXY_ORIGIN + PROXY_PATH + base64;
         }
         
-        // XMLHttpRequest を即座に上書き
         const OriginalXHR = window.XMLHttpRequest;
         window.XMLHttpRequest = function() {
           const xhr = new OriginalXHR();
           const originalOpen = xhr.open;
           
           xhr.open = function(method, url, ...rest) {
-            // api.x.com への直接アクセスをブロック
             if (typeof url === 'string' && (url.includes('api.x.com') || url.includes('api.twitter.com'))) {
               console.log('[EARLY INTERCEPT] ⛔ Blocked direct API call:', url);
               const proxiedUrl = encodeProxyUrl(url);
@@ -212,7 +209,7 @@ function rewriteHTML(html, baseUrl) {
     </script>
   `;
 
-  // 🔴 CRITICAL STEP 3: 超強力なインターセプトスクリプト
+  // 超強力インターセプト
   const interceptScript = `
     <script>
       (function() {
@@ -223,8 +220,6 @@ function rewriteHTML(html, baseUrl) {
         const PROXY_PATH = '${PROXY_PATH}';
         
         console.log('[Proxy] Ultra-Strong Intercept initializing for', TARGET_ORIGIN);
-        
-        let navigationBlocked = true;
         
         function isAlreadyProxied(url) {
           if (!url) return false;
@@ -253,15 +248,10 @@ function rewriteHTML(html, baseUrl) {
           return url;
         }
         
-        // location.href を完全に無効化
+        // location無効化
         Object.defineProperty(window.location, 'href', {
-          get: function() {
-            return window.location.href;
-          },
-          set: function(value) {
-            console.log('[Proxy] 🛑 BLOCKED location.href =', value);
-            return true;
-          },
+          get: function() { return window.location.href; },
+          set: function(value) { console.log('[Proxy] 🛑 BLOCKED location.href =', value); return true; },
           configurable: false
         });
         
@@ -273,51 +263,6 @@ function rewriteHTML(html, baseUrl) {
         window.location.assign = function(url) {
           console.log('[Proxy] 🛑 BLOCKED location.assign:', url);
           return false;
-        };
-        
-        try {
-          Object.defineProperty(window, 'location', {
-            get: function() {
-              return window.location;
-            },
-            set: function(value) {
-              console.log('[Proxy] 🛑 BLOCKED window.location =', value);
-              return true;
-            }
-          });
-        } catch (e) {
-          console.warn('[Proxy] Could not override window.location:', e);
-        }
-        
-        // History API
-        const originalPushState = window.history.pushState;
-        window.history.pushState = function(state, title, url) {
-          if (url && typeof url === 'string') {
-            console.log('[Proxy] pushState:', url);
-            if (url.startsWith('/') || url.startsWith('#') || url.startsWith('?')) {
-              return originalPushState.call(this, state, title, url);
-            }
-            if (!isAlreadyProxied(url) && url.startsWith('http')) {
-              const proxiedUrl = proxyUrl(url);
-              return originalPushState.call(this, state, title, proxiedUrl);
-            }
-          }
-          return originalPushState.call(this, state, title, url);
-        };
-        
-        const originalReplaceState = window.history.replaceState;
-        window.history.replaceState = function(state, title, url) {
-          if (url && typeof url === 'string') {
-            console.log('[Proxy] replaceState:', url);
-            if (url.startsWith('/') || url.startsWith('#') || url.startsWith('?')) {
-              return originalReplaceState.call(this, state, title, url);
-            }
-            if (!isAlreadyProxied(url) && url.startsWith('http')) {
-              const proxiedUrl = proxyUrl(url);
-              return originalReplaceState.call(this, state, title, proxiedUrl);
-            }
-          }
-          return originalReplaceState.call(this, state, title, url);
         };
         
         // fetch
@@ -366,118 +311,22 @@ function rewriteHTML(html, baseUrl) {
           return originalOpen.call(this, method, url, ...rest);
         };
         
-        // Media要素のsrc
-        try {
-          const mediaSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
-          if (mediaSrcDescriptor && mediaSrcDescriptor.set) {
-            Object.defineProperty(HTMLMediaElement.prototype, 'src', {
-              set: function(value) {
-                const proxiedValue = proxyUrl(value);
-                return mediaSrcDescriptor.set.call(this, proxiedValue);
-              },
-              get: function() {
-                return mediaSrcDescriptor.get.call(this);
-              }
-            });
-          }
-        } catch (e) {}
-        
-        // Image要素のsrc
-        try {
-          const imageSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
-          if (imageSrcDescriptor && imageSrcDescriptor.set) {
-            Object.defineProperty(HTMLImageElement.prototype, 'src', {
-              set: function(value) {
-                const proxiedValue = proxyUrl(value);
-                return imageSrcDescriptor.set.call(this, proxiedValue);
-              },
-              get: function() {
-                return imageSrcDescriptor.get.call(this);
-              }
-            });
-          }
-        } catch (e) {}
-        
-        // MutationObserver
-        const observer = new MutationObserver((mutations) => {
-          mutations.forEach((mutation) => {
-            mutation.addedNodes.forEach((node) => {
-              if (node.nodeType === 1) {
-                if (node.tagName === 'IMG' && node.src && !isAlreadyProxied(node.src)) {
-                  const proxiedSrc = proxyUrl(node.src);
-                  if (proxiedSrc !== node.src) node.src = proxiedSrc;
-                }
-                if ((node.tagName === 'VIDEO' || node.tagName === 'AUDIO') && node.src && !isAlreadyProxied(node.src)) {
-                  const proxiedSrc = proxyUrl(node.src);
-                  if (proxiedSrc !== node.src) node.src = proxiedSrc;
-                }
-                if (node.tagName === 'SOURCE' && node.src && !isAlreadyProxied(node.src)) {
-                  const proxiedSrc = proxyUrl(node.src);
-                  if (proxiedSrc !== node.src) node.src = proxiedSrc;
-                }
-                const imgs = node.querySelectorAll && node.querySelectorAll('img[src], video[src], audio[src], source[src]');
-                if (imgs) {
-                  imgs.forEach((el) => {
-                    if (el.src && !isAlreadyProxied(el.src)) {
-                      const proxiedSrc = proxyUrl(el.src);
-                      if (proxiedSrc !== el.src) el.src = proxiedSrc;
-                    }
-                  });
-                }
-              }
-            });
-          });
-        });
-        
-        observer.observe(document.documentElement, {
-          childList: true,
-          subtree: true
-        });
-        
-        // Google無効化
-        Object.defineProperty(window, 'google', {
-          get: () => undefined,
-          set: () => false,
-          configurable: false
-        });
-        
-        Object.defineProperty(window, 'gapi', {
-          get: () => undefined,
-          set: () => false,
-          configurable: false
-        });
-        
-        // エラー抑制
-        const originalError = console.error;
-        console.error = function(...args) {
-          const msg = args.join(' ');
-          if (msg.includes('GSI') || msg.includes('google')) return;
-          return originalError.apply(console, args);
-        };
-        
-        const originalWarn = console.warn;
-        console.warn = function(...args) {
-          const msg = args.join(' ');
-          if (msg.includes('GSI') || msg.includes('google')) return;
-          return originalWarn.apply(console, args);
-        };
-        
-        console.log('[Proxy] 🛡️ Ultra-Strong Navigation Protection ACTIVE');
+        console.log('[Proxy] 🛡️ Protection ACTIVE');
       })();
     </script>
   `;
 
-  // 🔴 CRITICAL: <head>の開始直後に注入（最優先実行）
+  // <head>に注入
   html = html.replace(/<head([^>]*)>/i, (match, attrs) => {
     return `<head${attrs}>${cspMeta}${earlyInterceptScript}${interceptScript}`;
   });
   
-  // Google関連スクリプト削除
+  // Google削除
   html = html.replace(/<script[^>]*src=[^>]*google[^>]*>[\s\S]*?<\/script>/gi, '');
   html = html.replace(/<script[^>]*src=[^>]*gstatic[^>]*>[\s\S]*?<\/script>/gi, '');
   html = html.replace(/<iframe[^>]*google[^>]*>[\s\S]*?<\/iframe>/gi, '');
 
-  // charsetを確保
+  // charset確保
   if (!html.includes('charset')) {
     html = html.replace(/<head([^>]*)>/i, '<head$1><meta charset="UTF-8">');
   }
