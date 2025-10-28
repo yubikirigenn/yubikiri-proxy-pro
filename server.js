@@ -852,39 +852,41 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
       };
 
       // X.com用のCookie（APIエンドポイント含む）
-      if (isXDomain && hasCookies) {
-        try {
-          const cookieString = cachedXCookies
-            .filter(c => c && c.name && c.value)
-            .map(c => `${c.name}=${c.value}`)
-            .join('; ');
-          
-          if (cookieString) {
-            headers['Cookie'] = cookieString;
-            console.log('🍪 Using cached cookies for resource');
-          }
-          
-          // API用の追加ヘッダー
-          if (isApiEndpoint) {
-            const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
-            if (ct0Cookie && ct0Cookie.value) {
-              headers['x-csrf-token'] = ct0Cookie.value;
-              console.log('🔐 Added CSRF token for API');
-            }
-            
-            headers['x-twitter-active-user'] = 'yes';
-            headers['x-twitter-client-language'] = 'en';
-            
-            // GraphQL用
-            if (targetUrl.includes('graphql')) {
-              headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
-              console.log('🔑 Added GraphQL bearer token');
-            }
-          }
-        } catch (e) {
-          console.log('⚠️ Cookie error:', e.message);
-        }
+if (isXDomain && hasCookies) {
+  try {
+    const cookieString = cachedXCookies
+      .filter(c => c && c.name && c.value)
+      .map(c => `${c.name}=${c.value}`)
+      .join('; ');
+    
+    if (cookieString) {
+      headers['Cookie'] = cookieString;
+      console.log('🍪 Using cached cookies for resource');
+    }
+    
+    // API用の追加ヘッダー
+    if (isApiEndpoint) {
+      const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
+      if (ct0Cookie && ct0Cookie.value) {
+        headers['x-csrf-token'] = ct0Cookie.value;
+        console.log('🔐 Added CSRF token for API');
       }
+      
+      // 🔴 追加：必須ヘッダー
+      headers['x-twitter-active-user'] = 'yes';
+      headers['x-twitter-client-language'] = 'en';
+      headers['x-twitter-auth-type'] = 'OAuth2Session';
+      
+      // GraphQL用
+      if (targetUrl.includes('graphql')) {
+        headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
+        console.log('🔑 Added GraphQL bearer token');
+      }
+    }
+  } catch (e) {
+    console.log('⚠️ Cookie error:', e.message);
+  }
+}
 
       const response = await axios({
         method: 'GET',
