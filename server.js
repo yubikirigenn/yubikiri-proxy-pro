@@ -899,21 +899,23 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
       console.log(`📥 Resource loaded: ${response.status}`);
       
       if (response.status === 400 || response.status === 404) {
-        console.log('❌ Resource Error:', response.status, 'for', targetUrl);
-        
-        // 404の場合は空のレスポンスを返す（エラーページではなく）
-        if (response.status === 404) {
-          res.status(404).send('');
-          return;
-        }
-        
-        try {
-          const errorBody = response.data.toString('utf-8');
-          console.log('Error body:', errorBody.substring(0, 300));
-        } catch (e) {
-          console.log('Could not parse error body');
-        }
-      }
+  console.log('❌ Resource Error:', response.status, 'for', targetUrl);
+  
+  // 🔴 デバッグ：エラーレスポンスの内容を確認
+  try {
+    const errorBody = response.data.toString('utf-8');
+    console.log('❌ Full Error body:', errorBody);
+  } catch (e) {
+    console.log('Could not parse error body');
+  }
+  
+  // そのままエラーをクライアントに返す（空ではなく）
+  const contentType = response.headers['content-type'] || 'application/octet-stream';
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.status(response.status).send(response.data);
+  return;
+}
 
       const contentType = response.headers['content-type'] || 'application/octet-stream';
       res.setHeader('Content-Type', contentType);
