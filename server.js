@@ -248,16 +248,64 @@ function rewriteHTML(html, baseUrl) {
           return url;
         }
         
-        // locationç„¡åŠ¹åŒ–（エラーハンドリング付き）
+// locationç„¡åŠ¹åŒ–（超強力版）
 try {
-  Object.defineProperty(window.location, 'href', {
-    get: function() { return window.location.href; },
-    set: function(value) { console.log('[Proxy] 🛑 BLOCKED location.href =', value); return true; },
-    configurable: false
-  });
+  // 🔴 STEP 1: location.href を完全にブロック
+  const originalHrefDescriptor = Object.getOwnPropertyDescriptor(Location.prototype, 'href');
+  if (originalHrefDescriptor && originalHrefDescriptor.set) {
+    Object.defineProperty(Location.prototype, 'href', {
+      get: function() {
+        return originalHrefDescriptor.get.call(this);
+      },
+      set: function(value) {
+        console.log('[Proxy] 🛑 BLOCKED location.href =', value);
+        // 完全に無視
+        return true;
+      },
+      configurable: true
+    });
+    console.log('[Proxy] ✅ Location.prototype.href overridden');
+  }
 } catch (e) {
-  console.warn('[Proxy] Could not override location.href:', e.message);
+  console.warn('[Proxy] Could not override Location.prototype.href:', e.message);
+  
+  // フォールバック: window.location.href を直接上書き
+  try {
+    Object.defineProperty(window.location, 'href', {
+      get: function() { return window.location.href; },
+      set: function(value) { 
+        console.log('[Proxy] 🛑 BLOCKED window.location.href =', value); 
+        return true; 
+      },
+      configurable: false
+    });
+  } catch (e2) {
+    console.warn('[Proxy] Could not override window.location.href:', e2.message);
+  }
 }
+
+// 🔴 STEP 2: location.replace/assign も完全ブロック
+Location.prototype.replace = function(url) {
+  console.log('[Proxy] 🛑 BLOCKED location.replace:', url);
+  return false;
+};
+
+Location.prototype.assign = function(url) {
+  console.log('[Proxy] 🛑 BLOCKED location.assign:', url);
+  return false;
+};
+
+window.location.replace = function(url) {
+  console.log('[Proxy] 🛑 BLOCKED window.location.replace:', url);
+  return false;
+};
+
+window.location.assign = function(url) {
+  console.log('[Proxy] 🛑 BLOCKED window.location.assign:', url);
+  return false;
+};
+
+console.log('[Proxy] ✅ All location methods blocked');
         
         window.location.replace = function(url) {
           console.log('[Proxy] 🛑 BLOCKED location.replace:', url);
@@ -317,6 +365,21 @@ try {
         
         console.log('[Proxy] 🛡️ Protection ACTIVE');
       })();
+      // 🔴 最終防衛線: beforeunload イベントをキャンセル
+window.addEventListener('beforeunload', function(e) {
+  console.log('[Proxy] ⚠️ beforeunload detected');
+  e.preventDefault();
+  e.returnValue = '';
+  return '';
+}, true);
+
+// 🔴 pagehide イベントも監視
+window.addEventListener('pagehide', function(e) {
+  console.log('[Proxy] ⚠️ pagehide detected');
+  e.preventDefault();
+}, true);
+
+console.log('[Proxy] 🛡️ Navigation guards installed');
     </script>
   `;
 
@@ -1547,6 +1610,16 @@ app.get('/explore', (req, res) => {
   const encodedUrl = encodeProxyUrl(targetUrl);
   res.redirect(302, `${PROXY_PATH}${encodedUrl}`);
 });
+
+// 🆕 検索ページのリダイレクト
+app.get('/search', (req, res) => {
+  console.log('🔄 Redirecting /search to proxied X.com');
+  const queryString = req.url.includes('?') ? req.url.split('?')[1] : '';
+  const targetUrl = `https://x.com/search${queryString ? '?' + queryString : ''}`;
+  const encodedUrl = encodeProxyUrl(targetUrl);
+  res.redirect(302, `${PROXY_PATH}${encodedUrl}`);
+});
+
 
 app.get('/notifications', (req, res) => {
   console.log('🔄 Redirecting /notifications to proxied X.com');
