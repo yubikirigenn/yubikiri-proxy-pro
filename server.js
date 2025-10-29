@@ -1358,10 +1358,10 @@ app.get('/api/x-cookies-debug', async (req, res) => {
     });
   }
 });
-```
+
 
 この診断エンドポイントで以下を確認してください:
-```
+
 https://yubikiri-proxy-pro-x.onrender.com/api/x-cookies-debug
 
 app.post('/api/proxy', async (req, res) => {
