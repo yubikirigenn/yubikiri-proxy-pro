@@ -248,50 +248,77 @@ function rewriteHTML(html, baseUrl) {
           return url;
         }
         
-// locationç„¡åŠ¹åŒ–（超強力版）
+// 🔴 STEP 1: location.href を完全にブロック（超強力版v2）
 try {
-  // 🔴 STEP 1: location.href を完全にブロック
-  const originalHrefDescriptor = Object.getOwnPropertyDescriptor(Location.prototype, 'href');
-  if (originalHrefDescriptor && originalHrefDescriptor.set) {
-    Object.defineProperty(Location.prototype, 'href', {
-      get: function() {
-        return originalHrefDescriptor.get.call(this);
-      },
-      set: function(value) {
-        console.log('[Proxy] 🛑 BLOCKED location.href =', value);
-        // 完全に無視
-        return true;
-      },
-      configurable: true
-    });
-    console.log('[Proxy] ✅ Location.prototype.href overridden');
-  }
+  // まずプロトタイプレベルで完全に無効化
+  Object.defineProperty(Location.prototype, 'href', {
+    get: function() {
+      const currentHref = window.location.toString();
+      console.log('[Proxy] 📍 Current location:', currentHref);
+      return currentHref;
+    },
+    set: function(value) {
+      console.log('[Proxy] 🛑 BLOCKED location.href =', value);
+      // 完全に無視（何もしない）
+      return true;
+    },
+    configurable: false,  // ← これ以上変更不可にする
+    enumerable: true
+  });
+  console.log('[Proxy] ✅ Location.prototype.href locked');
 } catch (e) {
-  console.warn('[Proxy] Could not override Location.prototype.href:', e.message);
+  console.warn('[Proxy] Could not lock Location.prototype.href:', e.message);
+}
+
+// 🔴 STEP 2: window.location へのアクセスも完全にブロック
+try {
+  // window.location 自体を読み取り専用のProxyでラップ
+  const originalLocation = window.location;
+  const locationProxy = new Proxy(originalLocation, {
+    set: function(target, prop, value) {
+      if (prop === 'href' || prop === 'replace' || prop === 'assign') {
+        console.log('[Proxy] 🛑 BLOCKED window.location.' + prop + ' =', value);
+        return true; // 変更を無視
+      }
+      return Reflect.set(target, prop, value);
+    },
+    get: function(target, prop) {
+      if (prop === 'replace' || prop === 'assign') {
+        return function() {
+          console.log('[Proxy] 🛑 BLOCKED window.location.' + prop);
+          return false;
+        };
+      }
+      return Reflect.get(target, prop);
+    }
+  });
   
-  // フォールバック: window.location.href を直接上書き
+  // window.location を上書き試行（一部のブラウザでは動作）
   try {
-    Object.defineProperty(window.location, 'href', {
-      get: function() { return window.location.href; },
-      set: function(value) { 
-        console.log('[Proxy] 🛑 BLOCKED window.location.href =', value); 
-        return true; 
+    Object.defineProperty(window, 'location', {
+      get: function() { return locationProxy; },
+      set: function(value) {
+        console.log('[Proxy] 🛑 BLOCKED window.location = ', value);
+        return true;
       },
       configurable: false
     });
-  } catch (e2) {
-    console.warn('[Proxy] Could not override window.location.href:', e2.message);
+    console.log('[Proxy] ✅ window.location protected with Proxy');
+  } catch (e) {
+    console.log('[Proxy] ⚠️ Could not redefine window.location (expected in some browsers)');
   }
+} catch (e) {
+  console.warn('[Proxy] Could not protect window.location:', e.message);
 }
 
-// 🔴 STEP 2: location.replace/assign も完全ブロック
+// 🔴 STEP 3: 個別メソッドも完全ブロック
 Location.prototype.replace = function(url) {
-  console.log('[Proxy] 🛑 BLOCKED location.replace:', url);
+  console.log('[Proxy] 🛑 BLOCKED Location.prototype.replace:', url);
   return false;
 };
 
 Location.prototype.assign = function(url) {
-  console.log('[Proxy] 🛑 BLOCKED location.assign:', url);
+  console.log('[Proxy] 🛑 BLOCKED Location.prototype.assign:', url);
   return false;
 };
 
@@ -304,6 +331,8 @@ window.location.assign = function(url) {
   console.log('[Proxy] 🛑 BLOCKED window.location.assign:', url);
   return false;
 };
+
+console.log('[Proxy] ✅ All location methods blocked (v2)');
 
 console.log('[Proxy] ✅ All location methods blocked');
         
@@ -935,10 +964,15 @@ if (isApiEndpoint) {
     console.log('🔐 Added CSRF token for API');
   }
   
-  // 🔴 必須ヘッダーを追加（POSTと同様に）
   headers['x-twitter-active-user'] = 'yes';
   headers['x-twitter-client-language'] = 'en';
-  headers['x-twitter-auth-type'] = 'OAuth2Session';  // ← これを追加
+  headers['x-twitter-auth-type'] = 'OAuth2Session';
+  
+  // 🔴 Refererを追加（検索API用）
+  if (targetUrl.includes('SearchTimeline')) {
+    headers['Referer'] = 'https://x.com/search';
+    console.log('🔗 Added Referer for SearchTimeline');
+  }
   
   // GraphQL用
   if (targetUrl.includes('graphql')) {
@@ -968,15 +1002,29 @@ if (isApiEndpoint) {
       if (response.status === 400 || response.status === 404) {
   console.log('❌ Resource Error:', response.status, 'for', targetUrl);
   
-  // 🔴 デバッグ：エラーレスポンスの内容を確認
   try {
     const errorBody = response.data.toString('utf-8');
     console.log('❌ Full Error body:', errorBody);
+    
+    // 🔴 認証エラーの場合、特別な処理
+    if (errorBody.includes('"code":215') || errorBody.includes('Bad Authentication')) {
+      console.log('🚨 AUTHENTICATION ERROR - Cookies may be invalid or insufficient');
+      console.log('🚨 Current cookie count:', cachedXCookies ? cachedXCookies.length : 0);
+      console.log('🚨 Please inject more cookies using /x-cookie-helper.html');
+      
+      // クライアントにエラーメッセージを返す
+      const contentType = response.headers['content-type'] || 'application/json';
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('X-Proxy-Error', 'Authentication Failed - More cookies required');
+      res.status(response.status).send(response.data);
+      return;
+    }
   } catch (e) {
-    console.log('Could not parse error body');
+    console.log('❌ Could not parse error body:', e.message);
   }
   
-  // そのままエラーをクライアントに返す（空ではなく）
+  // その他のエラーはそのまま返す
   const contentType = response.headers['content-type'] || 'application/octet-stream';
   res.setHeader('Content-Type', contentType);
   res.setHeader('Access-Control-Allow-Origin', '*');
