@@ -192,6 +192,24 @@
       </div>
 
       <div class="step">
+  <h2>⚡ クイック注入（JSON形式）</h2>
+  <p>別環境で取得したCookie JSON（x-cookie-extractor.htmlで生成）を貼り付けてください:</p>
+  
+  <textarea id="jsonInput" placeholder='{"auth_token": "...", "ct0": "...", ...}' style="width: 100%; min-height: 120px; padding: 12px; border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.05); color: #fff; border-radius: 6px; font-family: 'Courier New', monospace; font-size: 12px; margin: 10px 0;"></textarea>
+  
+  <button id="quickInjectBtn" style="background: #2196F3;">JSONから一括入力</button>
+  
+  <div class="info-box" style="margin-top: 15px;">
+    ℹ️ <strong>使い方:</strong><br>
+    1. X.comアクセス可能な環境で <code>/x-cookie-extractor.html</code> を開く<br>
+    2. Cookie抽出してJSON形式でコピー<br>
+    3. このテキストエリアに貼り付け<br>
+    4. 「JSONから一括入力」をクリック<br>
+    5. 下の「すべてのCookieを注入」をクリック
+  </div>
+</div>
+
+<div class="section-title">または個別に入力</div>
         <h2>ステップ3: Cookieを入力</h2>
         
         <div class="section-title">必須Cookie</div>
@@ -258,6 +276,36 @@
         </div>
         
         <div class="section-title">その他</div>
+
+        <div class="cookie-row">
+  <label class="optional">__cf_bm</label>
+  <input type="text" id="__cf_bm" placeholder="Cloudflare Bot Management（任意）">
+</div>
+
+<div class="cookie-row">
+  <label class="optional">__cuid</label>
+  <input type="text" id="__cuid" placeholder="Client User ID（任意）">
+</div>
+
+<div class="cookie-row">
+  <label class="optional">external_referer</label>
+  <input type="text" id="external_referer" placeholder="External Referer（任意）">
+</div>
+
+<div class="cookie-row">
+  <label class="optional">g_state</label>
+  <input type="text" id="g_state" placeholder="Google State（任意）">
+</div>
+
+<div class="cookie-row">
+  <label class="optional">guest_id_marketing</label>
+  <input type="text" id="guest_id_marketing" placeholder="Marketing ID（任意）">
+</div>
+
+<div class="cookie-row">
+  <label class="optional">guest_id_ads</label>
+  <input type="text" id="guest_id_ads" placeholder="Ads ID（任意）">
+</div>
         
         <div class="cookie-row">
           <label class="optional">mbox</label>
@@ -296,6 +344,57 @@
   </div>
 
   <script>
+    // JSON一括入力機能
+document.getElementById('quickInjectBtn').addEventListener('click', () => {
+  const jsonInput = document.getElementById('jsonInput');
+  const jsonText = jsonInput.value.trim();
+  
+  if (!jsonText) {
+    showResult('❌ JSONを貼り付けてください', 'error');
+    return;
+  }
+  
+  try {
+    const cookieData = JSON.parse(jsonText);
+    
+    if (typeof cookieData !== 'object' || Array.isArray(cookieData)) {
+      throw new Error('無効なJSON形式です（オブジェクトである必要があります）');
+    }
+    
+    let filledCount = 0;
+    const cookieIds = [
+      'auth_token', 'ct0', 'twid', 'auth_multi', 'guest_id', 
+      'personalization_id', 'kdt', 'dnt', 'd_prefs', 'eu_cn', 
+      'lang', 'mbox', '_twitter_sess', 'guest_id_marketing', 
+      'guest_id_ads', '__cf_bm', '__cuid', 'external_referer', 'g_state'
+    ];
+    
+    // 各入力欄に値を設定
+    for (const key in cookieData) {
+      const input = document.getElementById(key);
+      if (input) {
+        input.value = cookieData[key];
+        filledCount++;
+      }
+    }
+    
+    showResult(
+      `✅ ${filledCount}個のCookieを自動入力しました！\n\n` +
+      `次は下の「すべてのCookieを注入」ボタンを押してください。`,
+      'success'
+    );
+    
+    // 入力エリアをクリア
+    jsonInput.value = '';
+    
+  } catch (error) {
+    showResult(
+      `❌ JSON解析エラー\n\n${error.message}\n\n` +
+      `正しいJSON形式で貼り付けてください。`,
+      'error'
+    );
+  }
+});
     document.getElementById('injectBtn').addEventListener('click', async () => {
       const btn = document.getElementById('injectBtn');
       const result = document.getElementById('result');

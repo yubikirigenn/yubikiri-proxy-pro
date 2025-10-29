@@ -461,6 +461,8 @@ async function initBrowser() {
           defaultViewport: chromium.defaultViewport,
           executablePath: await chromium.executablePath(),
           headless: chromium.headless,
+          // 🔴 プロトコルタイムアウトを追加
+          protocolTimeout: 120000 // 120秒
         };
       } else {
         launchConfig = {
@@ -472,12 +474,14 @@ async function initBrowser() {
             '--disable-gpu',
             '--disable-blink-features=AutomationControlled',
             '--disable-features=IsolateOrigins,site-per-process'
-          ]
+          ],
+          // 🔴 プロトコルタイムアウトを追加
+          protocolTimeout: 120000 // 120秒
         };
       }
 
       browser = await puppeteer.puppeteerCore.launch(launchConfig);
-      console.log('✅ Browser initialized');
+      console.log('✅ Browser initialized with extended timeout');
     } catch (error) {
       console.error('❌ Browser launch failed:', error.message);
       throw error;
@@ -490,9 +494,9 @@ async function initXLoginPage() {
   const browserInstance = await initBrowser();
   const page = await browserInstance.newPage();
 
-  // タイムアウトを延長（X.comは読み込みが遅い）
-  page.setDefaultNavigationTimeout(60000);
-  page.setDefaultTimeout(60000);
+  // 🔴 タイムアウトを大幅に延長（X.comは読み込みが遅い）
+  page.setDefaultNavigationTimeout(120000); // 30秒 → 120秒
+  page.setDefaultTimeout(120000); // 30秒 → 120秒
 
   await page.setViewport({ 
     width: 1920, 
