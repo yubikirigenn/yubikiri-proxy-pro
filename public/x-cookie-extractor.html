@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>X Cookie Extractor - For Blocked Environments</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: #fff;
+      padding: 40px 20px;
+      min-height: 100vh;
+    }
+    .container { max-width: 800px; margin: 0 auto; }
+    h1 {
+      font-size: 28px;
+      margin-bottom: 20px;
+      text-align: center;
+    }
+    .card {
+      background: rgba(255,255,255,0.1);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 12px;
+      padding: 30px;
+      margin-bottom: 20px;
+    }
+    .step {
+      background: rgba(255,255,255,0.05);
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 15px;
+    }
+    .step h3 {
+      font-size: 16px;
+      margin-bottom: 10px;
+      color: #ffd700;
+    }
+    .step p, .step li {
+      font-size: 14px;
+      line-height: 1.8;
+      margin-bottom: 8px;
+    }
+    .step ol {
+      margin-left: 20px;
+    }
+    button {
+      width: 100%;
+      padding: 16px 24px;
+      background: #4CAF50;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 16px;
+      font-weight: 600;
+      margin-top: 20px;
+      transition: all 0.3s;
+    }
+    button:hover {
+      background: #45a049;
+      transform: translateY(-2px);
+      box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+    }
+    textarea {
+      width: 100%;
+      min-height: 150px;
+      padding: 15px;
+      border: 2px solid rgba(255,255,255,0.3);
+      background: rgba(0,0,0,0.3);
+      color: #fff;
+      border-radius: 8px;
+      font-size: 13px;
+      font-family: 'Courier New', monospace;
+      resize: vertical;
+      margin-top: 10px;
+    }
+    textarea:focus {
+      outline: none;
+      border-color: #4CAF50;
+    }
+    .result {
+      background: rgba(76,175,80,0.2);
+      border: 2px solid #4CAF50;
+      border-radius: 8px;
+      padding: 20px;
+      margin-top: 20px;
+      display: none;
+    }
+    .result.active { display: block; }
+    .result pre {
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+    }
+    .warning {
+      background: rgba(255,152,0,0.2);
+      border: 2px solid #ff9800;
+      border-radius: 8px;
+      padding: 15px;
+      margin: 20px 0;
+      font-size: 14px;
+    }
+    .copy-btn {
+      background: #2196F3;
+      padding: 10px 20px;
+      margin-top: 10px;
+      width: auto;
+      display: inline-block;
+    }
+    .copy-btn:hover {
+      background: #1976D2;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🍪 X Cookie Extractor</h1>
+    <p style="text-align: center; margin-bottom: 30px; font-size: 14px; opacity: 0.9;">
+      X.comがアクセス可能な環境で実行し、Cookieをエクスポートしてください
+    </p>
+
+    <div class="card">
+      <div class="step">
+        <h3>📍 このページの使い方</h3>
+        <p>このページは <strong>X.comにアクセスできる環境</strong>（自宅PCなど）で開いてください。</p>
+        <p>取得したCookie情報を、<strong>X.comがブロックされた環境</strong>（職場など）のプロキシサーバーに注入して使用します。</p>
+      </div>
+
+      <div class="step">
+        <h3>ステップ1: X.comにログイン</h3>
+        <ol>
+          <li>新しいタブで <a href="https://x.com/home" target="_blank" style="color: #4CAF50;">X.com</a> を開く</li>
+          <li>ログインしていない場合はログイン</li>
+          <li>ホーム画面が表示されることを確認</li>
+        </ol>
+      </div>
+
+      <div class="step">
+        <h3>ステップ2: Cookie抽出ボタンをクリック</h3>
+        <p>下のボタンをクリックすると、X.comのCookieを自動的に抽出します。</p>
+        <button id="extractBtn">🔍 X.comのCookieを抽出</button>
+      </div>
+
+      <div class="warning">
+        ⚠️ <strong>セキュリティ警告:</strong> Cookieは重要な認証情報です。信頼できる場所でのみ使用し、他人と共有しないでください。
+      </div>
+
+      <div id="result" class="result">
+        <h3 style="margin-bottom: 15px;">✅ Cookie抽出完了</h3>
+        <p style="margin-bottom: 10px;">以下の情報をコピーして、プロキシ環境のCookie Helperに貼り付けてください:</p>
+        <textarea id="cookieOutput" readonly></textarea>
+        <button class="copy-btn" id="copyBtn">📋 クリップボードにコピー</button>
+        <p style="margin-top: 15px; font-size: 13px; opacity: 0.8;">
+          取得したCookie数: <strong id="cookieCount">0</strong>個
+        </p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom: 15px;">📤 次のステップ</h3>
+      <ol style="margin-left: 20px; line-height: 1.8;">
+        <li>上のテキストエリアの内容をコピー</li>
+        <li>X.comがブロックされた環境で、プロキシのCookie Helperにアクセス:<br>
+          <code style="background: rgba(0,0,0,0.3); padding: 5px 10px; border-radius: 4px; display: inline-block; margin-top: 5px;">
+            https://yubikiri-proxy-pro-x.onrender.com/x-cookie-helper.html
+          </code>
+        </li>
+        <li>各Cookie情報を対応する欄に貼り付け</li>
+        <li>「すべてのCookieを注入」ボタンをクリック</li>
+      </ol>
+    </div>
+  </div>
+
+  <script>
+    document.getElementById('extractBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('extractBtn');
+      const result = document.getElementById('result');
+      const output = document.getElementById('cookieOutput');
+      const countEl = document.getElementById('cookieCount');
+
+      btn.disabled = true;
+      btn.textContent = '抽出中...';
+
+      try {
+        // X.comのiframeを作成してCookieを取得
+        const iframe = document.createElement('iframe');
+        iframe.style.display = 'none';
+        iframe.src = 'https://x.com/';
+        document.body.appendChild(iframe);
+
+        // iframeの読み込みを待機
+        await new Promise((resolve, reject) => {
+          iframe.onload = resolve;
+          iframe.onerror = reject;
+          setTimeout(reject, 10000); // 10秒タイムアウト
+        });
+
+        // Cookieを取得
+        let cookieData;
+        try {
+          cookieData = iframe.contentWindow.document.cookie;
+        } catch (e) {
+          // Same-Origin Policyでブロックされた場合
+          console.log('iframe方式失敗、直接取得を試行');
+          
+          // 現在のページのCookieから取得（X.comドメインのものだけ）
+          const currentCookies = document.cookie;
+          
+          // ユーザーに手動で取得してもらう
+          const userCookies = prompt(
+            'X.comのタブで以下を実行してください:\n\n' +
+            'F12を開く → Console → 以下を実行:\n' +
+            'document.cookie\n\n' +
+            '出力された文字列を以下に貼り付けてください:'
+          );
+          
+          if (!userCookies) {
+            throw new Error('Cookie情報が入力されませんでした');
+          }
+          
+          cookieData = userCookies;
+        }
+
+        document.body.removeChild(iframe);
+
+        if (!cookieData || cookieData.trim() === '') {
+          throw new Error('Cookieが取得できませんでした。X.comにログインしているか確認してください。');
+        }
+
+        // Cookieをパース
+        const cookies = cookieData.split('; ');
+        const cookieMap = {};
+        
+        cookies.forEach(cookie => {
+          const [name, value] = cookie.split('=');
+          if (name && value) {
+            cookieMap[name] = decodeURIComponent(value);
+          }
+        });
+
+        // JSON形式で出力
+        const formattedOutput = JSON.stringify(cookieMap, null, 2);
+        
+        output.value = formattedOutput;
+        countEl.textContent = Object.keys(cookieMap).length;
+        result.classList.add('active');
+
+        btn.textContent = '✅ 抽出完了';
+        btn.style.background = '#4CAF50';
+
+      } catch (error) {
+        alert(
+          '❌ Cookie抽出エラー\n\n' +
+          error.message + '\n\n' +
+          '手動で取得する方法:\n' +
+          '1. X.comのタブでF12を開く\n' +
+          '2. Consoleで以下を実行:\n' +
+          '   document.cookie\n' +
+          '3. 出力された文字列をコピーして、このページの抽出ボタンを再度クリック'
+        );
+        btn.disabled = false;
+        btn.textContent = '🔍 X.comのCookieを抽出';
+      }
+    });
+
+    document.getElementById('copyBtn').addEventListener('click', () => {
+      const output = document.getElementById('cookieOutput');
+      output.select();
+      document.execCommand('copy');
+      
+      const btn = document.getElementById('copyBtn');
+      btn.textContent = '✅ コピーしました！';
+      setTimeout(() => {
+        btn.textContent = '📋 クリップボードにコピー';
+      }, 2000);
+    });
+  </script>
+</body>
+</html>
+```
+
+---
+
+## 📋 使用手順
+
+### 環境A（X.comアクセス可能な場所 - 自宅など）
+
+1. **ブラウザで以下を開く:**
+```
+   https://yubikiri-proxy-pro-x.onrender.com/x-cookie-extractor.html
+```
+
+2. **別タブでX.comにログイン**
+
+3. **「Cookie抽出」ボタンをクリック**
+
+4. **JSON形式のCookie情報をコピー**
+
+5. **USBメモリ/メール/チャットなどで自分に送信**
+
+---
+
+### 環境B（X.comブロックされている場所 - 職場など）
+
+1. **送信したCookie情報を開く**
+
+2. **Cookie Helperにアクセス:**
+```
+   https://yubikiri-proxy-pro-x.onrender.com/x-cookie-helper.html
