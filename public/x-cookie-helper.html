@@ -363,11 +363,13 @@ document.getElementById('quickInjectBtn').addEventListener('click', () => {
     
     let filledCount = 0;
     const cookieIds = [
-      'auth_token', 'ct0', 'twid', 'auth_multi', 'guest_id', 
-      'personalization_id', 'kdt', 'dnt', 'd_prefs', 'eu_cn', 
-      'lang', 'mbox', '_twitter_sess', 'guest_id_marketing', 
-      'guest_id_ads', '__cf_bm', '__cuid', 'external_referer', 'g_state'
-    ];
+  'auth_token', 'ct0', 'twid', 'auth_multi', 'guest_id', 
+  'personalization_id', 'kdt', 'dnt', 'd_prefs', 'eu_cn', 
+  'lang', 'mbox', '_twitter_sess',
+  // 🔴 追加
+  'guest_id_marketing', 'guest_id_ads', '__cf_bm', '__cuid', 
+  'external_referer', 'g_state'
+];
     
     // 各入力欄に値を設定
     for (const key in cookieData) {
@@ -396,91 +398,94 @@ document.getElementById('quickInjectBtn').addEventListener('click', () => {
   }
 });
     document.getElementById('injectBtn').addEventListener('click', async () => {
-      const btn = document.getElementById('injectBtn');
-      const result = document.getElementById('result');
+  const btn = document.getElementById('injectBtn');
+  const result = document.getElementById('result');
 
-      // 必須Cookieのチェック
-      const authToken = document.getElementById('auth_token').value.trim();
-      const ct0 = document.getElementById('ct0').value.trim();
+  // 必須Cookieのチェック
+  const authToken = document.getElementById('auth_token').value.trim();
+  const ct0 = document.getElementById('ct0').value.trim();
 
-      if (!authToken || !ct0) {
-        showResult('❌ 必須Cookie（auth_token、ct0）を入力してください', 'error');
-        return;
-      }
+  if (!authToken || !ct0) {
+    showResult('❌ 必須Cookie（auth_token、ct0）を入力してください', 'error');
+    return;
+  }
 
-      // すべてのCookieを収集
-      const cookieIds = [
-        'auth_token', 'ct0', 'twid', 'auth_multi', 'guest_id', 
-        'personalization_id', 'kdt', 'dnt', 'd_prefs', 'eu_cn', 
-        'lang', 'mbox', '_twitter_sess'
-      ];
+  // すべてのCookieを収集
+  const cookieIds = [
+    'auth_token', 'ct0', 'twid', 'auth_multi', 'guest_id', 
+    'personalization_id', 'kdt', 'dnt', 'd_prefs', 'eu_cn', 
+    'lang', 'mbox', '_twitter_sess',
+    'guest_id_marketing', 'guest_id_ads', '__cf_bm', '__cuid', 
+    'external_referer', 'g_state'
+  ];
 
-      const allCookies = [];
-      let collectedCount = 0;
+  const allCookies = [];
+  let collectedCount = 0;
 
-      cookieIds.forEach(id => {
-        const value = document.getElementById(id).value.trim();
-        if (value) {
-          allCookies.push({
-            name: id,
-            value: value,
-            domain: '.x.com',
-            path: '/',
-            secure: true,
-            httpOnly: id === 'auth_token' || id === '_twitter_sess',
-            sameSite: id === 'ct0' ? 'Lax' : 'None'
-          });
-          collectedCount++;
-        }
+  cookieIds.forEach(id => {
+    const value = document.getElementById(id).value.trim();
+    if (value) {
+      allCookies.push({
+        name: id,
+        value: value,
+        domain: '.x.com',
+        path: '/',
+        secure: true,
+        httpOnly: id === 'auth_token' || id === '_twitter_sess',
+        sameSite: id === 'ct0' ? 'Lax' : 'None'
       });
+      collectedCount++;
+    }
+  });
 
-      btn.disabled = true;
-      btn.textContent = '注入中...';
+  // 🔴 デバッグ出力
+  console.log('=== COOKIE INJECTION DEBUG ===');
+  console.log('Collected cookies:', collectedCount);
+  console.log('Cookie names:', allCookies.map(c => c.name));
+  console.log('Full payload:', JSON.stringify({ allCookies }, null, 2));
 
-      try {
-        const response = await fetch('/api/x-inject-cookies', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ allCookies })
-        });
+  btn.disabled = true;
+  btn.textContent = '注入中...';
 
-        const data = await response.json();
-
-        if (data.success) {
-          showResult(
-            `✅ Cookie注入成功!\n\n` +
-            `入力したCookie数: ${collectedCount}\n` +
-            `注入されたCookie数: ${data.cookieCount}\n` +
-            `Cookies: ${data.cookieNames.join(', ')}\n\n` +
-            `これでProxyからXにログイン状態でアクセスできます！\n\n` +
-            `使用方法:\n` +
-            `1. トップページ (/) でXのURLを入力\n` +
-            `   例: https://x.com/home\n` +
-            `2. 「Go」ボタンをクリック\n` +
-            `3. ログイン状態で表示されます\n\n` +
-            `💡 もしAPIエラーが出る場合は、より多くのCookieを入力してみてください。`,
-            'success'
-          );
-        } else {
-          showResult(
-            `❌ Cookie注入失敗\n\n` +
-            `エラー: ${data.message || data.error}\n\n` +
-            `Cookieの値が正しいか確認してください。`,
-            'error'
-          );
-        }
-      } catch (error) {
-        showResult(
-          `❌ リクエストエラー: ${error.message}\n\n` +
-          `サーバーに接続できませんでした。\n` +
-          `サーバーが起動しているか確認してください。`,
-          'error'
-        );
-      } finally {
-        btn.disabled = false;
-        btn.textContent = 'すべてのCookieを注入';
-      }
+  try {
+    const response = await fetch('/api/x-inject-cookies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ allCookies })
     });
+
+    const data = await response.json();
+
+    // 🔴 レスポンスをデバッグ
+    console.log('=== SERVER RESPONSE ===');
+    console.log('Response:', data);
+
+    if (data.success) {
+      showResult(
+        `✅ Cookie注入成功!\n\n` +
+        `入力したCookie数: ${collectedCount}\n` +
+        `注入されたCookie数: ${data.cookieCount}\n` +
+        `Cookies: ${data.cookieNames.join(', ')}\n\n` +
+        `これでProxyからXにログイン状態でアクセスできます！`,
+        'success'
+      );
+    } else {
+      showResult(
+        `❌ Cookie注入失敗\n\n` +
+        `エラー: ${data.message || data.error}`,
+        'error'
+      );
+    }
+  } catch (error) {
+    showResult(
+      `❌ リクエストエラー: ${error.message}`,
+      'error'
+    );
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'すべてのCookieを注入';
+  }
+});
 
     function showResult(text, type) {
       const result = document.getElementById('result');
