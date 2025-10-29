@@ -982,6 +982,12 @@ if (isApiEndpoint) {
   if (targetUrl.includes('graphql')) {
     headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
     console.log('🔑 Added GraphQL bearer token');
+    
+    // 🔴 Query IDを抽出してログ出力
+    const queryIdMatch = targetUrl.match(/graphql\/([^\/]+)\//);
+    if (queryIdMatch) {
+      console.log('🔍 GraphQL Query ID:', queryIdMatch[1]);
+    }
   }
   
   console.log('📤 API headers set:', Object.keys(headers));
