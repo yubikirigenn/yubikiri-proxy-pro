@@ -928,24 +928,26 @@ if (isXDomain && hasCookies) {
     }
     
     // API用の追加ヘッダー
-    if (isApiEndpoint) {
-      const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
-      if (ct0Cookie && ct0Cookie.value) {
-        headers['x-csrf-token'] = ct0Cookie.value;
-        console.log('🔐 Added CSRF token for API');
-      }
-      
-      // 🔴 追加：必須ヘッダー
-      headers['x-twitter-active-user'] = 'yes';
-      headers['x-twitter-client-language'] = 'en';
-      headers['x-twitter-auth-type'] = 'OAuth2Session';
-      
-      // GraphQL用
-      if (targetUrl.includes('graphql')) {
-        headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
-        console.log('🔑 Added GraphQL bearer token');
-      }
-    }
+if (isApiEndpoint) {
+  const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
+  if (ct0Cookie && ct0Cookie.value) {
+    headers['x-csrf-token'] = ct0Cookie.value;
+    console.log('🔐 Added CSRF token for API');
+  }
+  
+  // 🔴 必須ヘッダーを追加（POSTと同様に）
+  headers['x-twitter-active-user'] = 'yes';
+  headers['x-twitter-client-language'] = 'en';
+  headers['x-twitter-auth-type'] = 'OAuth2Session';  // ← これを追加
+  
+  // GraphQL用
+  if (targetUrl.includes('graphql')) {
+    headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
+    console.log('🔑 Added GraphQL bearer token');
+  }
+  
+  console.log('📤 API headers set:', Object.keys(headers));
+}
   } catch (e) {
     console.log('⚠️ Cookie error:', e.message);
   }
