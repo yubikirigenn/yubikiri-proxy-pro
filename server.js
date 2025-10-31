@@ -700,6 +700,114 @@ app.options(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
   res.status(204).send();
 });
 
+// ===== 🔴 SEARCH TIMELINE SPECIAL HANDLER =====
+// 検索APIは404になるため、Puppeteer経由で取得
+app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res, next) => {
+  try {
+    const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
+    const targetUrl = decodeProxyUrl(encodedUrl);
+   
+    // SearchTimeline APIの場合のみ特別処理
+    if (targetUrl.includes('SearchTimeline') && targetUrl.includes('graphql')) {
+      console.log('🔍 [SEARCH] Detected SearchTimeline API request');
+      console.log('🔍 [SEARCH] Using Puppeteer bypass strategy');
+     
+      // URLからクエリパラメータを抽出
+      const urlObj = new URL(targetUrl);
+      const variables = urlObj.searchParams.get('variables');
+     
+      if (!variables) {
+        console.log('❌ [SEARCH] No variables found in URL');
+        return next(); // 通常のハンドラーに委譲
+      }
+     
+      let searchQuery;
+      try {
+        const varsObj = JSON.parse(variables);
+        searchQuery = varsObj.rawQuery;
+        console.log('🔍 [SEARCH] Extracted query:', searchQuery);
+      } catch (e) {
+        console.log('❌ [SEARCH] Could not parse variables');
+        return next();
+      }
+     
+      if (!searchQuery) {
+        return next();
+      }
+     
+      // Puppeteerで検索ページにアクセス
+      const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
+     
+      if (!xLoginPage || !hasCookies) {
+        console.log('❌ [SEARCH] xLoginPage not available or no cookies');
+        return res.status(503).json({
+          error: 'Search requires authentication. Please inject cookies first.',
+          code: 503
+        });
+      }
+     
+      try {
+        console.log('🔍 [SEARCH] Navigating to search page with Puppeteer...');
+       
+        // useXLoginPage で排他制御
+        const searchData = await useXLoginPage(async () => {
+          // 検索ページにアクセス
+          const searchUrl = `https://x.com/search?q=${encodeURIComponent(searchQuery)}&src=typed_query`;
+          console.log('🔍 [SEARCH] URL:', searchUrl);
+         
+          await xLoginPage.goto(searchUrl, {
+            waitUntil: 'domcontentloaded',
+            timeout: 60000
+          }).catch(err => {
+            console.log('⚠️ [SEARCH] Navigation timeout (continuing):', err.message);
+          });
+         
+          // タイムラインの読み込みを待つ
+          await Promise.race([
+            xLoginPage.waitForSelector('article[data-testid="tweet"]', { timeout: 15000 }),
+            xLoginPage.waitForSelector('div[data-testid="cellInnerDiv"]', { timeout: 15000 }),
+            new Promise(resolve => setTimeout(resolve, 15000))
+          ]).catch(() => {
+            console.log('⚠️ [SEARCH] Timeline elements not found, continuing anyway');
+          });
+         
+          // 追加の待機
+          await new Promise(resolve => setTimeout(resolve, 3000));
+         
+          // ページのHTMLを取得
+          const html = await xLoginPage.content();
+          console.log('✅ [SEARCH] Search page loaded successfully');
+         
+          return html;
+        });
+       
+        // HTMLをリライトして返す
+        const rewrittenHTML = rewriteHTML(searchData, targetUrl);
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.send(rewrittenHTML);
+       
+      } catch (searchError) {
+        console.error('❌ [SEARCH] Error:', searchError.message);
+        return res.status(500).json({
+          error: 'Search failed',
+          message: searchError.message
+        });
+      }
+     
+      return; // ハンドラー終了
+    }
+   
+    // SearchTimeline以外は通常処理
+    next();
+   
+  } catch (error) {
+    console.error('❌ [SEARCH] Handler error:', error.message);
+    next();
+  }
+});
+
+
 // 🔴 CRITICAL: GET proxy route with Puppeteer
 app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
   console.log('🔵 [PROXY] GET request received');
@@ -1587,112 +1695,7 @@ app.post('/api/x-inject-cookies', async (req, res) => {
     });
   }
 });
-// ===== 🔴 SEARCH TIMELINE SPECIAL HANDLER =====
-// 検索APIは404になるため、Puppeteer経由で取得
-app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res, next) => {
-  try {
-    const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
-    const targetUrl = decodeProxyUrl(encodedUrl);
-    
-    // SearchTimeline APIの場合のみ特別処理
-    if (targetUrl.includes('SearchTimeline') && targetUrl.includes('graphql')) {
-      console.log('🔍 [SEARCH] Detected SearchTimeline API request');
-      console.log('🔍 [SEARCH] Using Puppeteer bypass strategy');
-      
-      // URLからクエリパラメータを抽出
-      const urlObj = new URL(targetUrl);
-      const variables = urlObj.searchParams.get('variables');
-      
-      if (!variables) {
-        console.log('❌ [SEARCH] No variables found in URL');
-        return next(); // 通常のハンドラーに委譲
-      }
-      
-      let searchQuery;
-      try {
-        const varsObj = JSON.parse(variables);
-        searchQuery = varsObj.rawQuery;
-        console.log('🔍 [SEARCH] Extracted query:', searchQuery);
-      } catch (e) {
-        console.log('❌ [SEARCH] Could not parse variables');
-        return next();
-      }
-      
-      if (!searchQuery) {
-        return next();
-      }
-      
-      // Puppeteerで検索ページにアクセス
-      const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
-      
-      if (!xLoginPage || !hasCookies) {
-        console.log('❌ [SEARCH] xLoginPage not available or no cookies');
-        return res.status(503).json({
-          error: 'Search requires authentication. Please inject cookies first.',
-          code: 503
-        });
-      }
-      
-      try {
-        console.log('🔍 [SEARCH] Navigating to search page with Puppeteer...');
-        
-        // useXLoginPage で排他制御
-        const searchData = await useXLoginPage(async () => {
-          // 検索ページにアクセス
-          const searchUrl = `https://x.com/search?q=${encodeURIComponent(searchQuery)}&src=typed_query`;
-          console.log('🔍 [SEARCH] URL:', searchUrl);
-          
-          await xLoginPage.goto(searchUrl, {
-            waitUntil: 'domcontentloaded',
-            timeout: 60000
-          }).catch(err => {
-            console.log('⚠️ [SEARCH] Navigation timeout (continuing):', err.message);
-          });
-          
-          // タイムラインの読み込みを待つ
-          await Promise.race([
-            xLoginPage.waitForSelector('article[data-testid="tweet"]', { timeout: 15000 }),
-            xLoginPage.waitForSelector('div[data-testid="cellInnerDiv"]', { timeout: 15000 }),
-            new Promise(resolve => setTimeout(resolve, 15000))
-          ]).catch(() => {
-            console.log('⚠️ [SEARCH] Timeline elements not found, continuing anyway');
-          });
-          
-          // 追加の待機
-          await new Promise(resolve => setTimeout(resolve, 3000));
-          
-          // ページのHTMLを取得
-          const html = await xLoginPage.content();
-          console.log('✅ [SEARCH] Search page loaded successfully');
-          
-          return html;
-        });
-        
-        // HTMLをリライトして返す
-        const rewrittenHTML = rewriteHTML(searchData, targetUrl);
-        res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.send(rewrittenHTML);
-        
-      } catch (searchError) {
-        console.error('❌ [SEARCH] Error:', searchError.message);
-        return res.status(500).json({
-          error: 'Search failed',
-          message: searchError.message
-        });
-      }
-      
-      return; // ハンドラー終了
-    }
-    
-    // SearchTimeline以外は通常処理
-    next();
-    
-  } catch (error) {
-    console.error('❌ [SEARCH] Handler error:', error.message);
-    next();
-  }
-});
+
 
 app.get('/api/x-cookies', async (req, res) => {
   try {
