@@ -57,39 +57,6 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-app.use((req, res, next) => {
-  const path = req.path;
-  
-  if (path.startsWith('/proxy/') || 
-      path.startsWith('/api/') || 
-      path === '/' ||
-      path.match(/\.(html|js|css|png|jpg|jpeg|gif|svg|ico)$/)) {
-    return next();
-  }
-  
-  const xComPaths = [
-    '/home', '/explore', '/notifications', '/messages', '/search',
-    '/i/', '/settings/', '/compose/', '/intent/', '/oauth/'
-  ];
-  
-  const isXComPath = xComPaths.some(pattern => {
-    if (pattern.endsWith('/')) {
-      return path.startsWith(pattern);
-    }
-    return path === pattern;
-  });
-  
-  if (isXComPath) {
-    console.log('🔄 [REDIRECT] X.com path:', path);
-    const queryString = req.url.includes('?') ? req.url.split('?')[1] : '';
-    const targetUrl = `https://x.com${path}${queryString ? '?' + queryString : ''}`;
-    const encodedUrl = encodeProxyUrl(targetUrl);
-    return res.redirect(302, `/proxy/${encodedUrl}`);
-  }
-  
-  next();
-});
-
 // 🔴 CRITICAL FIX: 静的ファイルを後で提供（API routesの後）
 // app.use(express.static('public')); // ← ここでは使わない
 
@@ -556,73 +523,24 @@ async function initXLoginPage() {
     'Upgrade-Insecure-Requests': '1'
   });
 
-  // ===== 🔴 CRITICAL FIX: xLoginPage用のAPIヘッダーインターセプト =====
-// server.js の initXLoginPage() 関数内、page.on('request', ...) の後に追加
-
-// 🆕 APIリクエストのヘッダーを自動補完
-page.on('request', (request) => {
-  if (request.isInterceptResolutionHandled()) {
-    return;
-  }
+  await page.setRequestInterception(true);
+  page.removeAllListeners('request');
   
-  const requestUrl = request.url();
-  
-  // Googleブロックは既存のまま
-  if (requestUrl.includes('google.com') || 
-      requestUrl.includes('gstatic.com') ||
-      requestUrl.includes('googleapis.com')) {
-    request.abort().catch(() => {});
-    return;
-  }
-  
-  // 🔴 X.com APIリクエストの場合、ヘッダーを追加
-  if ((requestUrl.includes('api.x.com') || requestUrl.includes('api.twitter.com')) && 
-      cachedXCookies && cachedXCookies.length > 0) {
-    
-    console.log('🔧 [xLoginPage] Intercepting API request:', requestUrl.substring(0, 100) + '...');
-    
-    // 既存のヘッダーを取得
-    const headers = request.headers();
-    
-    // ct0トークンを取得
-    const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
-    
-    // 必要なヘッダーを追加
-    const newHeaders = {
-      ...headers,
-      'x-twitter-active-user': 'yes',
-      'x-twitter-client-language': 'en',
-      'x-twitter-auth-type': 'OAuth2Session'
-    };
-    
-    // CSRFトークンを追加
-    if (ct0Cookie && ct0Cookie.value) {
-      newHeaders['x-csrf-token'] = ct0Cookie.value;
-      console.log('🔐 [xLoginPage] Added CSRF token');
+  page.on('request', (request) => {
+    if (request.isInterceptResolutionHandled()) {
+      return;
     }
     
-    // GraphQL用のBearer token
-    if (requestUrl.includes('graphql')) {
-      newHeaders['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
-      console.log('🔑 [xLoginPage] Added GraphQL bearer token');
+    const requestUrl = request.url();
+    if (requestUrl.includes('google.com') || 
+        requestUrl.includes('gstatic.com') ||
+        requestUrl.includes('googleapis.com')) {
+      request.abort().catch(() => {});
+      return;
     }
     
-    // Refererを追加
-    if (!newHeaders['referer']) {
-      newHeaders['referer'] = 'https://x.com/';
-    }
-    
-    // ヘッダーを上書きして継続
-    request.continue({ headers: newHeaders }).catch(() => {});
-    console.log('✅ [xLoginPage] API request modified');
-    return;
-  }
-  
-  // その他のリクエストは通常通り
-  request.continue().catch(() => {});
-});
-
-console.log('✅ [xLoginPage] API header interceptor installed');
+    request.continue().catch(() => {});
+  });
 
   await page.evaluateOnNewDocument(() => {
     delete Object.getPrototypeOf(navigator).webdriver;
@@ -772,51 +690,6 @@ app.get('/test-cookies', (req, res) => {
 
 // ===== 8. PROXY ROUTES =====
 
-// ===== 🔴 X.COM RELATIVE PATH HANDLER (最優先) =====
-// server.js の OPTIONS routeの直後、全てのproxy routeの前に配置
-
-// X.comの相対パスを検知してプロキシ経由にリダイレクト
-app.use((req, res, next) => {
-  const path = req.path;
-  
-  // プロキシパス、API、静的ファイルは除外
-  if (path.startsWith('/proxy/') || 
-      path.startsWith('/api/') || 
-      path === '/' ||
-      path.match(/\.(html|js|css|png|jpg|jpeg|gif|svg|ico)$/)) {
-    return next();
-  }
-  
-  // X.comの典型的な相対パス
-  const xComPaths = [
-    '/home', '/explore', '/notifications', '/messages', '/search',
-    '/i/', '/settings/', '/compose/', '/intent/', '/oauth/'
-  ];
-  
-  const isXComPath = xComPaths.some(pattern => {
-    if (pattern.endsWith('/')) {
-      return path.startsWith(pattern);
-    }
-    return path === pattern;
-  });
-  
-  if (isXComPath) {
-    console.log('🔄 [REDIRECT] X.com relative path detected:', path);
-    
-    // クエリ文字列を保持
-    const queryString = req.url.includes('?') ? req.url.split('?')[1] : '';
-    const targetUrl = `https://x.com${path}${queryString ? '?' + queryString : ''}`;
-    const encodedUrl = encodeProxyUrl(targetUrl);
-    
-    console.log('🔄 [REDIRECT] Redirecting to:', `/proxy/${encodedUrl}`);
-    return res.redirect(302, `/proxy/${encodedUrl}`);
-  }
-  
-  next();
-});
-
-console.log('✅ X.com relative path handler installed');
-
 // OPTIONS proxy route（CORSプリフライト用）
 app.options(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -833,21 +706,21 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res, next) => {
   try {
     const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
     const targetUrl = decodeProxyUrl(encodedUrl);
-   
+    
     // SearchTimeline APIの場合のみ特別処理
     if (targetUrl.includes('SearchTimeline') && targetUrl.includes('graphql')) {
       console.log('🔍 [SEARCH] Detected SearchTimeline API request');
       console.log('🔍 [SEARCH] Using Puppeteer bypass strategy');
-     
+      
       // URLからクエリパラメータを抽出
       const urlObj = new URL(targetUrl);
       const variables = urlObj.searchParams.get('variables');
-     
+      
       if (!variables) {
         console.log('❌ [SEARCH] No variables found in URL');
         return next(); // 通常のハンドラーに委譲
       }
-     
+      
       let searchQuery;
       try {
         const varsObj = JSON.parse(variables);
@@ -857,14 +730,14 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res, next) => {
         console.log('❌ [SEARCH] Could not parse variables');
         return next();
       }
-     
+      
       if (!searchQuery) {
         return next();
       }
-     
+      
       // Puppeteerで検索ページにアクセス
       const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
-     
+      
       if (!xLoginPage || !hasCookies) {
         console.log('❌ [SEARCH] xLoginPage not available or no cookies');
         return res.status(503).json({
@@ -872,23 +745,23 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res, next) => {
           code: 503
         });
       }
-     
+      
       try {
         console.log('🔍 [SEARCH] Navigating to search page with Puppeteer...');
-       
+        
         // useXLoginPage で排他制御
         const searchData = await useXLoginPage(async () => {
           // 検索ページにアクセス
           const searchUrl = `https://x.com/search?q=${encodeURIComponent(searchQuery)}&src=typed_query`;
           console.log('🔍 [SEARCH] URL:', searchUrl);
-         
+          
           await xLoginPage.goto(searchUrl, {
             waitUntil: 'domcontentloaded',
             timeout: 60000
           }).catch(err => {
             console.log('⚠️ [SEARCH] Navigation timeout (continuing):', err.message);
           });
-         
+          
           // タイムラインの読み込みを待つ
           await Promise.race([
             xLoginPage.waitForSelector('article[data-testid="tweet"]', { timeout: 15000 }),
@@ -897,23 +770,23 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res, next) => {
           ]).catch(() => {
             console.log('⚠️ [SEARCH] Timeline elements not found, continuing anyway');
           });
-         
+          
           // 追加の待機
           await new Promise(resolve => setTimeout(resolve, 3000));
-         
+          
           // ページのHTMLを取得
           const html = await xLoginPage.content();
           console.log('✅ [SEARCH] Search page loaded successfully');
-         
+          
           return html;
         });
-       
+        
         // HTMLをリライトして返す
         const rewrittenHTML = rewriteHTML(searchData, targetUrl);
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.send(rewrittenHTML);
-       
+        
       } catch (searchError) {
         console.error('❌ [SEARCH] Error:', searchError.message);
         return res.status(500).json({
@@ -921,18 +794,19 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res, next) => {
           message: searchError.message
         });
       }
-     
+      
       return; // ハンドラー終了
     }
-   
+    
     // SearchTimeline以外は通常処理
     next();
-   
+    
   } catch (error) {
     console.error('❌ [SEARCH] Handler error:', error.message);
     next();
   }
 });
+
 
 
 // 🔴 CRITICAL: GET proxy route with Puppeteer
@@ -953,9 +827,8 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
     
     // APIエンドポイントかどうかを判定
     const isApiEndpoint = parsedUrl.hostname.includes('api.x.com') || 
-                      parsedUrl.hostname.includes('api.twitter.com') ||
-                      parsedUrl.pathname.includes('/graphql/') ||
-                      parsedUrl.pathname.includes('/i/api/');
+                          parsedUrl.pathname.includes('.json') ||
+                          parsedUrl.pathname.includes('graphql');
     
     // 動画・メディアファイルの判定
     const isMediaFile = parsedUrl.pathname.match(/\.(js|css|json|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|mp4|webm|m3u8|ts|m4s|mpd)$/i) ||
@@ -1823,7 +1696,6 @@ app.post('/api/x-inject-cookies', async (req, res) => {
     });
   }
 });
-
 
 app.get('/api/x-cookies', async (req, res) => {
   try {
