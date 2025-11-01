@@ -57,6 +57,39 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
+app.use((req, res, next) => {
+  const path = req.path;
+  
+  if (path.startsWith('/proxy/') || 
+      path.startsWith('/api/') || 
+      path === '/' ||
+      path.match(/\.(html|js|css|png|jpg|jpeg|gif|svg|ico)$/)) {
+    return next();
+  }
+  
+  const xComPaths = [
+    '/home', '/explore', '/notifications', '/messages', '/search',
+    '/i/', '/settings/', '/compose/', '/intent/', '/oauth/'
+  ];
+  
+  const isXComPath = xComPaths.some(pattern => {
+    if (pattern.endsWith('/')) {
+      return path.startsWith(pattern);
+    }
+    return path === pattern;
+  });
+  
+  if (isXComPath) {
+    console.log('🔄 [REDIRECT] X.com path:', path);
+    const queryString = req.url.includes('?') ? req.url.split('?')[1] : '';
+    const targetUrl = `https://x.com${path}${queryString ? '?' + queryString : ''}`;
+    const encodedUrl = encodeProxyUrl(targetUrl);
+    return res.redirect(302, `/proxy/${encodedUrl}`);
+  }
+  
+  next();
+});
+
 // 🔴 CRITICAL FIX: 静的ファイルを後で提供（API routesの後）
 // app.use(express.static('public')); // ← ここでは使わない
 
@@ -739,6 +772,51 @@ app.get('/test-cookies', (req, res) => {
 
 // ===== 8. PROXY ROUTES =====
 
+// ===== 🔴 X.COM RELATIVE PATH HANDLER (最優先) =====
+// server.js の OPTIONS routeの直後、全てのproxy routeの前に配置
+
+// X.comの相対パスを検知してプロキシ経由にリダイレクト
+app.use((req, res, next) => {
+  const path = req.path;
+  
+  // プロキシパス、API、静的ファイルは除外
+  if (path.startsWith('/proxy/') || 
+      path.startsWith('/api/') || 
+      path === '/' ||
+      path.match(/\.(html|js|css|png|jpg|jpeg|gif|svg|ico)$/)) {
+    return next();
+  }
+  
+  // X.comの典型的な相対パス
+  const xComPaths = [
+    '/home', '/explore', '/notifications', '/messages', '/search',
+    '/i/', '/settings/', '/compose/', '/intent/', '/oauth/'
+  ];
+  
+  const isXComPath = xComPaths.some(pattern => {
+    if (pattern.endsWith('/')) {
+      return path.startsWith(pattern);
+    }
+    return path === pattern;
+  });
+  
+  if (isXComPath) {
+    console.log('🔄 [REDIRECT] X.com relative path detected:', path);
+    
+    // クエリ文字列を保持
+    const queryString = req.url.includes('?') ? req.url.split('?')[1] : '';
+    const targetUrl = `https://x.com${path}${queryString ? '?' + queryString : ''}`;
+    const encodedUrl = encodeProxyUrl(targetUrl);
+    
+    console.log('🔄 [REDIRECT] Redirecting to:', `/proxy/${encodedUrl}`);
+    return res.redirect(302, `/proxy/${encodedUrl}`);
+  }
+  
+  next();
+});
+
+console.log('✅ X.com relative path handler installed');
+
 // OPTIONS proxy route（CORSプリフライト用）
 app.options(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -875,8 +953,9 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
     
     // APIエンドポイントかどうかを判定
     const isApiEndpoint = parsedUrl.hostname.includes('api.x.com') || 
-                          parsedUrl.pathname.includes('.json') ||
-                          parsedUrl.pathname.includes('graphql');
+                      parsedUrl.hostname.includes('api.twitter.com') ||
+                      parsedUrl.pathname.includes('/graphql/') ||
+                      parsedUrl.pathname.includes('/i/api/');
     
     // 動画・メディアファイルの判定
     const isMediaFile = parsedUrl.pathname.match(/\.(js|css|json|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|mp4|webm|m3u8|ts|m4s|mpd)$/i) ||
