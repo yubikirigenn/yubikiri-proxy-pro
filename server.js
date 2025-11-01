@@ -523,24 +523,73 @@ async function initXLoginPage() {
     'Upgrade-Insecure-Requests': '1'
   });
 
-  await page.setRequestInterception(true);
-  page.removeAllListeners('request');
+  // ===== 🔴 CRITICAL FIX: xLoginPage用のAPIヘッダーインターセプト =====
+// server.js の initXLoginPage() 関数内、page.on('request', ...) の後に追加
+
+// 🆕 APIリクエストのヘッダーを自動補完
+page.on('request', (request) => {
+  if (request.isInterceptResolutionHandled()) {
+    return;
+  }
   
-  page.on('request', (request) => {
-    if (request.isInterceptResolutionHandled()) {
-      return;
+  const requestUrl = request.url();
+  
+  // Googleブロックは既存のまま
+  if (requestUrl.includes('google.com') || 
+      requestUrl.includes('gstatic.com') ||
+      requestUrl.includes('googleapis.com')) {
+    request.abort().catch(() => {});
+    return;
+  }
+  
+  // 🔴 X.com APIリクエストの場合、ヘッダーを追加
+  if ((requestUrl.includes('api.x.com') || requestUrl.includes('api.twitter.com')) && 
+      cachedXCookies && cachedXCookies.length > 0) {
+    
+    console.log('🔧 [xLoginPage] Intercepting API request:', requestUrl.substring(0, 100) + '...');
+    
+    // 既存のヘッダーを取得
+    const headers = request.headers();
+    
+    // ct0トークンを取得
+    const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
+    
+    // 必要なヘッダーを追加
+    const newHeaders = {
+      ...headers,
+      'x-twitter-active-user': 'yes',
+      'x-twitter-client-language': 'en',
+      'x-twitter-auth-type': 'OAuth2Session'
+    };
+    
+    // CSRFトークンを追加
+    if (ct0Cookie && ct0Cookie.value) {
+      newHeaders['x-csrf-token'] = ct0Cookie.value;
+      console.log('🔐 [xLoginPage] Added CSRF token');
     }
     
-    const requestUrl = request.url();
-    if (requestUrl.includes('google.com') || 
-        requestUrl.includes('gstatic.com') ||
-        requestUrl.includes('googleapis.com')) {
-      request.abort().catch(() => {});
-      return;
+    // GraphQL用のBearer token
+    if (requestUrl.includes('graphql')) {
+      newHeaders['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
+      console.log('🔑 [xLoginPage] Added GraphQL bearer token');
     }
     
-    request.continue().catch(() => {});
-  });
+    // Refererを追加
+    if (!newHeaders['referer']) {
+      newHeaders['referer'] = 'https://x.com/';
+    }
+    
+    // ヘッダーを上書きして継続
+    request.continue({ headers: newHeaders }).catch(() => {});
+    console.log('✅ [xLoginPage] API request modified');
+    return;
+  }
+  
+  // その他のリクエストは通常通り
+  request.continue().catch(() => {});
+});
+
+console.log('✅ [xLoginPage] API header interceptor installed');
 
   await page.evaluateOnNewDocument(() => {
     delete Object.getPrototypeOf(navigator).webdriver;
