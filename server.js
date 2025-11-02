@@ -749,59 +749,62 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res, next) => {
       try {
         console.log('🔍 [SEARCH] Navigating to search page with Puppeteer...');
         
-        // SearchTimeline特別ハンドラー内の修正
-// useXLoginPage の callback 内を以下のように修正
-
+// SearchTimelineç‰¹åˆ¥ãƒãƒ³ãƒ‰ãƒ©ãƒ¼å†…ã®ä¿®æ­£
 const searchData = await useXLoginPage(async () => {
   try {
     const searchUrl = `https://x.com/search?q=${encodeURIComponent(searchQuery)}&src=typed_query`;
     console.log('🔍 [SEARCH] Navigating to:', searchUrl);
     
-    await xLoginPage.goto(searchUrl, {
-      waitUntil: 'domcontentloaded',
-      timeout: 120000  // 60秒 → 120秒に延長
-    }).catch(err => {
-      console.log('⚠️ [SEARCH] Navigation timeout (continuing):', err.message);
-    });
-    
-    // タイムライン要素の待機
-    await Promise.race([
-      xLoginPage.waitForSelector('article[data-testid="tweet"]', { timeout: 15000 }),
-      xLoginPage.waitForSelector('div[data-testid="cellInnerDiv"]', { timeout: 15000 }),
-      new Promise(resolve => setTimeout(resolve, 15000))
-    ]).catch(() => {
-      console.log('⚠️ [SEARCH] Timeline elements not found, continuing anyway');
-    });
-    
-    // 追加の待機
-    await new Promise(resolve => setTimeout(resolve, 5000));  // 3秒 → 5秒
-    
-    // 🔴 ここを try-catch で囲む
+    // 🔴 より短いタイムアウトで試行
     try {
-      const html = await xLoginPage.content();
-      console.log('✅ [SEARCH] Search page loaded successfully');
-      return html;
-    } catch (contentError) {
-      // ページ遷移でコンテキストが破壊された場合
-      if (contentError.message.includes('Execution context was destroyed') || 
-          contentError.message.includes('ERR_ABORTED')) {
-        console.log('⚠️ [SEARCH] Page navigation interrupted, retrying...');
+      await xLoginPage.goto(searchUrl, {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000  // 30秒に短縮
+      });
+      console.log('✅ [SEARCH] Navigation completed');
+    } catch (navError) {
+      console.log('⚠️ [SEARCH] Navigation timeout, but continuing:', navError.message);
+      // タイムアウトしても続行
+    }
+    
+    // 🔴 より短い待機時間
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
+    // 🔴 コンテンツ取得を複数回試行
+    let html = null;
+    let attempts = 0;
+    const maxAttempts = 3;
+    
+    while (attempts < maxAttempts && !html) {
+      attempts++;
+      console.log(`🔍 [SEARCH] Attempt ${attempts}/${maxAttempts} to get content`);
+      
+      try {
+        html = await xLoginPage.content();
         
-        // 少し待ってから再試行
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        
-        try {
-          const html = await xLoginPage.content();
-          console.log('✅ [SEARCH] Search page loaded successfully (retry)');
+        // HTMLが十分なサイズかチェック
+        if (html && html.length > 10000) {
+          console.log(`✅ [SEARCH] Got valid content (${html.length} bytes)`);
           return html;
-        } catch (retryError) {
-          console.log('❌ [SEARCH] Failed to get content after retry:', retryError.message);
-          throw new Error('Search page navigation failed');
+        } else {
+          console.log(`⚠️ [SEARCH] Content too small (${html ? html.length : 0} bytes), retrying...`);
+          html = null;
+          await new Promise(resolve => setTimeout(resolve, 2000));
         }
-      } else {
-        throw contentError;
+        
+      } catch (contentError) {
+        console.log(`❌ [SEARCH] Attempt ${attempts} failed:`, contentError.message);
+        
+        if (attempts < maxAttempts) {
+          console.log('⏳ [SEARCH] Waiting before retry...');
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        } else {
+          throw new Error('Failed to get search page content after multiple attempts');
+        }
       }
     }
+    
+    throw new Error('Failed to get valid search content');
     
   } catch (searchError) {
     console.error('❌ [SEARCH] Error in useXLoginPage:', searchError.message);
