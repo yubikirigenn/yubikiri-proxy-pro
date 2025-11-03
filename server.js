@@ -689,21 +689,6 @@ app.get('/test-cookies', (req, res) => {
 });
 
 // ===== 8. PROXY ROUTES =====
-
-// ===== 🔴 SEARCH TIMELINE SPECIAL HANDLER =====
-// 📍 重要: このハンドラーは OPTIONS route の直後、通常のGET routeの前に配置する
-
-// OPTIONS proxy route(CORSプリフライト用)
-app.options(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token, x-twitter-active-user, x-twitter-client-language, x-twitter-auth-type');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  res.setHeader('Access-Control-Max-Age', '86400');
-  res.status(204).send();
-});
-
-// ===== 🔴 CRITICAL: SearchTimeline特別ハンドラー =====
 // 📍 この位置: OPTIONS routeの直後、通常のGET routeの前
 
 app.options(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
@@ -783,50 +768,83 @@ app.use(`${PROXY_PATH}:encodedUrl*`, async (req, res, next) => {
         const searchUrl = `https://x.com/search?q=${encodeURIComponent(searchQuery)}&src=typed_query`;
         console.log('🔍 [SEARCH] Target URL:', searchUrl);
         
+        // 🔴 より短いタイムアウトで即座にコンテンツ取得を試みる
         try {
-          await xLoginPage.goto(searchUrl, {
+          const gotoPromise = xLoginPage.goto(searchUrl, {
             waitUntil: 'domcontentloaded',
-            timeout: 30000
+            timeout: 15000  // 15秒に短縮
           });
-          console.log('✅ [SEARCH] Navigation completed');
+          
+          // 10秒後にタイムアウト判定
+          const timeoutPromise = new Promise((resolve) => {
+            setTimeout(() => {
+              console.log('⚠️ [SEARCH] 10 seconds passed, attempting to get content...');
+              resolve('timeout');
+            }, 10000);
+          });
+          
+          const result = await Promise.race([gotoPromise, timeoutPromise]);
+          
+          if (result === 'timeout') {
+            console.log('⚠️ [SEARCH] Navigation timeout, but continuing...');
+          } else {
+            console.log('✅ [SEARCH] Navigation completed');
+          }
         } catch (navError) {
-          console.log('⚠️ [SEARCH] Navigation timeout:', navError.message);
+          console.log('⚠️ [SEARCH] Navigation error:', navError.message);
         }
         
-        // 少し待機
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        // 🔴 待機時間を短縮
+        await new Promise(resolve => setTimeout(resolve, 2000));
         
-        // コンテンツ取得
+        // 🔴 コンテンツ取得を即座に開始
+        console.log('🔍 [SEARCH] Attempting to get page content...');
+        
         let html = null;
         let attempts = 0;
+        const maxAttempts = 2;  // 試行回数を減らす
         
-        while (attempts < 3 && !html) {
+        while (attempts < maxAttempts && !html) {
           attempts++;
-          console.log(`🔍 [SEARCH] Getting content (attempt ${attempts}/3)...`);
+          console.log(`🔍 [SEARCH] Content attempt ${attempts}/${maxAttempts}...`);
           
           try {
-            html = await xLoginPage.content();
+            // 🔴 タイムアウト付きでコンテンツ取得
+            const contentPromise = xLoginPage.content();
+            const timeoutPromise = new Promise((_, reject) => {
+              setTimeout(() => reject(new Error('Content timeout')), 5000);
+            });
             
-            if (html && html.length > 10000) {
-              console.log(`✅ [SEARCH] Got valid HTML (${html.length} bytes)`);
+            html = await Promise.race([contentPromise, timeoutPromise]);
+            
+            if (html && html.length > 5000) {  // 閾値を下げる
+              console.log(`✅ [SEARCH] Got HTML (${html.length} bytes)`);
+              
+              // 🔴 X.comのエラーページでないか確認
+              if (html.includes('Something went wrong') || html.includes('Try again')) {
+                console.log('⚠️ [SEARCH] Got error page, retrying...');
+                html = null;
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                continue;
+              }
+              
               return html;
             } else {
               console.log(`⚠️ [SEARCH] HTML too small (${html ? html.length : 0} bytes)`);
               html = null;
-              if (attempts < 3) {
-                await new Promise(resolve => setTimeout(resolve, 2000));
-              }
             }
+            
           } catch (contentError) {
-            console.log(`❌ [SEARCH] Attempt ${attempts} failed:`, contentError.message);
-            if (attempts < 3) {
-              await new Promise(resolve => setTimeout(resolve, 2000));
-            }
+            console.log(`❌ [SEARCH] Attempt ${attempts} error:`, contentError.message);
+          }
+          
+          if (attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
           }
         }
         
         if (!html) {
-          throw new Error('Failed to get search page content');
+          throw new Error('Could not get valid search page content after multiple attempts');
         }
         
         return html;
@@ -913,6 +931,7 @@ app.use(`${PROXY_PATH}:encodedUrl*`, async (req, res, next) => {
     next();
   }
 });
+
 
 
 
