@@ -25,31 +25,8 @@ const xLoginPageQueue = []; // 🆕 待機キュー
 let searchPage = null;
 let searchPageBusy = false;
 
-async function getOrCreateSearchPage() {
-  if (!searchPage) {
-    console.log('🔍 [SEARCH-PAGE] Creating dedicated search page...');
-    const browserInstance = await initBrowser();
-    searchPage = await browserInstance.newPage();
-    
-    searchPage.setDefaultNavigationTimeout(20000);
-    searchPage.setDefaultTimeout(20000);
-    
-    await searchPage.setViewport({ width: 1920, height: 1080 });
-    await searchPage.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-    );
-    
-    // Cookieを設定
-    const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
-    if (hasCookies) {
-      await searchPage.setCookie(...cachedXCookies);
-      console.log('✅ [SEARCH-PAGE] Cookies set');
-    }
-    
-    console.log('✅ [SEARCH-PAGE] Dedicated search page created');
-  }
-  return searchPage;
-}
+  
+
 
 // ===== 🔴 SearchTimeline特別ハンドラー（完全独立版） =====
 
@@ -865,6 +842,32 @@ async function initXLoginPage() {
 
   console.log('✅ X login page initialized with ultra-stealth mode');
   return page;
+}
+
+ async function getOrCreateSearchPage() {
+  if (!searchPage) {
+   console.log('🔍 [SEARCH-PAGE] Creating dedicated search page...');
+    const browserInstance = await initBrowser();
+    searchPage = await browserInstance.newPage();
+    
+    searchPage.setDefaultNavigationTimeout(20000);
+    searchPage.setDefaultTimeout(20000);
+    
+    await searchPage.setViewport({ width: 1920, height: 1080 });
+    await searchPage.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+    );
+    
+    // Cookieを設定
+    const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
+    if (hasCookies) {
+      await searchPage.setCookie(...cachedXCookies);
+      console.log('✅ [SEARCH-PAGE] Cookies set');
+    }
+    
+    console.log('✅ [SEARCH-PAGE] Dedicated search page created');
+  }
+  return searchPage;
 }
 
 // 🆕 xLoginPageの排他制御付き使用
