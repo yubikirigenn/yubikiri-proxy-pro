@@ -19,6 +19,275 @@ let cachedXCookies = null;
 let xLoginPageBusy = false; // 🆕 ページ使用中フラグ
 const xLoginPageQueue = []; // 🆕 待機キュー
 
+// ===== 🔴 CRITICAL: 検索専用ページの実装 =====
+// xLoginPageとは完全に独立した検索専用ページ
+
+let searchPage = null;
+let searchPageBusy = false;
+
+async function getOrCreateSearchPage() {
+  if (!searchPage) {
+    console.log('🔍 [SEARCH-PAGE] Creating dedicated search page...');
+    const browserInstance = await initBrowser();
+    searchPage = await browserInstance.newPage();
+    
+    searchPage.setDefaultNavigationTimeout(20000);
+    searchPage.setDefaultTimeout(20000);
+    
+    await searchPage.setViewport({ width: 1920, height: 1080 });
+    await searchPage.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+    );
+    
+    // Cookieを設定
+    const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
+    if (hasCookies) {
+      await searchPage.setCookie(...cachedXCookies);
+      console.log('✅ [SEARCH-PAGE] Cookies set');
+    }
+    
+    console.log('✅ [SEARCH-PAGE] Dedicated search page created');
+  }
+  return searchPage;
+}
+
+// ===== 🔴 SearchTimeline特別ハンドラー（完全独立版） =====
+
+app.use(`${PROXY_PATH}:encodedUrl*`, async (req, res, next) => {
+  if (req.method !== 'GET') {
+    return next();
+  }
+  
+  try {
+    const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
+    const targetUrl = decodeProxyUrl(encodedUrl);
+    
+    const isSearchTimeline = targetUrl.includes('SearchTimeline') && targetUrl.includes('graphql');
+    
+    if (!isSearchTimeline) {
+      return next();
+    }
+    
+    console.log('🔍 [SEARCH] ✅ Detected SearchTimeline API request');
+    console.log('🔍 [SEARCH] Using DEDICATED search page (independent from xLoginPage)');
+    
+    const urlObj = new URL(targetUrl);
+    const variables = urlObj.searchParams.get('variables');
+    
+    if (!variables) {
+      return res.status(400).json({ error: 'No search variables found' });
+    }
+    
+    let searchQuery;
+    try {
+      const varsObj = JSON.parse(variables);
+      searchQuery = varsObj.rawQuery;
+      console.log('🔍 [SEARCH] Query:', searchQuery);
+    } catch (e) {
+      return res.status(400).json({ error: 'Invalid variables format' });
+    }
+    
+    if (!searchQuery) {
+      return res.status(400).json({ error: 'No search query found' });
+    }
+    
+    const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
+    
+    if (!hasCookies) {
+      return res.status(503).json({
+        error: 'Search requires authentication. Please inject cookies first.',
+        hasCookies: false
+      });
+    }
+    
+    // 🔴 検索ページがビジー状態かチェック
+    if (searchPageBusy) {
+      console.log('⚠️ [SEARCH] Search page is busy, returning error');
+      return res.status(503).send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <title>検索中...</title>
+          <style>
+            body { 
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+              background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
+              color: #fff;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              height: 100vh;
+              margin: 0;
+            }
+            .box {
+              background: rgba(255,255,255,0.05);
+              border: 1px solid rgba(255,255,255,0.1);
+              border-radius: 8px;
+              padding: 40px;
+              max-width: 500px;
+              text-align: center;
+            }
+            h1 { color: #ffa726; margin-bottom: 20px; }
+            p { color: rgba(255,255,255,0.7); line-height: 1.6; }
+            a {
+              display: inline-block;
+              margin-top: 20px;
+              padding: 12px 24px;
+              background: #b0b0b0;
+              color: #1a1a1a;
+              text-decoration: none;
+              border-radius: 6px;
+              font-weight: 600;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="box">
+            <h1>🔍 別の検索が実行中です</h1>
+            <p>別の検索リクエストを処理中です。</p>
+            <p>数秒待ってから再度お試しください。</p>
+            <a href="javascript:history.back()">戻る</a>
+          </div>
+        </body>
+        </html>
+      `);
+    }
+    
+    searchPageBusy = true;
+    
+    try {
+      console.log('🔍 [SEARCH] Starting search with dedicated page...');
+      
+      const page = await getOrCreateSearchPage();
+      const searchUrl = `https://x.com/search?q=${encodeURIComponent(searchQuery)}&src=typed_query`;
+      console.log('🔍 [SEARCH] URL:', searchUrl);
+      
+      // ナビゲーション
+      try {
+        const navPromise = page.goto(searchUrl, {
+          waitUntil: 'domcontentloaded',
+          timeout: 15000
+        });
+        
+        const timeoutPromise = new Promise((resolve) => {
+          setTimeout(() => {
+            console.log('⚠️ [SEARCH] 10s passed, getting content...');
+            resolve('timeout');
+          }, 10000);
+        });
+        
+        await Promise.race([navPromise, timeoutPromise]);
+      } catch (navError) {
+        console.log('⚠️ [SEARCH] Nav error:', navError.message);
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // コンテンツ取得
+      let html = null;
+      for (let i = 0; i < 2; i++) {
+        try {
+          console.log(`🔍 [SEARCH] Getting content (attempt ${i + 1}/2)...`);
+          html = await page.content();
+          
+          if (html && html.length > 5000) {
+            console.log(`✅ [SEARCH] Got HTML (${html.length} bytes)`);
+            break;
+          }
+          
+          if (i < 1) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+        } catch (e) {
+          console.log(`❌ [SEARCH] Attempt ${i + 1} failed:`, e.message);
+        }
+      }
+      
+      if (!html || html.length < 5000) {
+        throw new Error('Failed to get valid search page content');
+      }
+      
+      const rewrittenHTML = rewriteHTML(html, targetUrl);
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.send(rewrittenHTML);
+      
+      console.log('✅ [SEARCH] Response sent successfully');
+      
+    } catch (searchError) {
+      console.error('❌ [SEARCH] Error:', searchError.message);
+      
+      res.status(500).send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <title>検索エラー</title>
+          <style>
+            body { 
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+              background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
+              color: #fff;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              height: 100vh;
+              margin: 0;
+            }
+            .error-box {
+              background: rgba(255,255,255,0.05);
+              border: 1px solid rgba(255,255,255,0.1);
+              border-radius: 8px;
+              padding: 40px;
+              max-width: 500px;
+              text-align: center;
+            }
+            h1 { color: #ff6b6b; margin-bottom: 20px; }
+            p { color: rgba(255,255,255,0.7); line-height: 1.6; margin-bottom: 15px; }
+            code { 
+              background: rgba(0,0,0,0.3);
+              padding: 2px 8px;
+              border-radius: 4px;
+              font-family: monospace;
+            }
+            a {
+              display: inline-block;
+              margin: 10px;
+              padding: 12px 24px;
+              background: #b0b0b0;
+              color: #1a1a1a;
+              text-decoration: none;
+              border-radius: 6px;
+              font-weight: 600;
+            }
+            a:hover { background: #d0d0d0; }
+          </style>
+        </head>
+        <body>
+          <div class="error-box">
+            <h1>🔍 検索に失敗しました</h1>
+            <p><strong>検索:</strong> <code>${searchQuery}</code></p>
+            <p>${searchError.message}</p>
+            <div>
+              <a href="javascript:location.reload()">再読み込み</a>
+              <a href="javascript:history.back()">戻る</a>
+            </div>
+          </div>
+        </body>
+        </html>
+      `);
+    } finally {
+      searchPageBusy = false;
+    }
+    
+  } catch (error) {
+    console.error('❌ [SEARCH] Handler error:', error.message);
+    searchPageBusy = false;
+    next();
+  }
+});
+
 const COOKIE_FILE = path.join(__dirname, '.x-cookies.json');
 
 // ===== 3. COOKIE PERSISTENCE FUNCTIONS =====
