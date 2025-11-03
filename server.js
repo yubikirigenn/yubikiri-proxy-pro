@@ -689,6 +689,7 @@ app.get('/test-cookies', (req, res) => {
 });
 
 // ===== 8. PROXY ROUTES =====
+// ===== 🔴 CRITICAL: SearchTimeline特別ハンドラー =====
 // 📍 この位置: OPTIONS routeの直後、通常のGET routeの前
 
 app.options(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
