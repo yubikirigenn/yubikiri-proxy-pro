@@ -22,11 +22,6 @@ const xLoginPageQueue = []; // 🆕 待機キュー
 // ===== 🔴 CRITICAL: 検索専用ページの実装 =====
 // xLoginPageとは完全に独立した検索専用ページ
 
-let searchPage = null;
-let searchPageBusy = false;
-
-
-
 
 const COOKIE_FILE = path.join(__dirname, '.x-cookies.json');
 
@@ -497,6 +492,332 @@ async function initBrowser() {
     }
   }
   return browser;
+}
+
+// ===== 🔴 CRITICAL FIX 1: 検索専用ページの初期化を起動時に実行 =====
+// この部分を initBrowser() の後に追加
+
+let searchPage = null;
+let searchPageBusy = false;
+
+async function getOrCreateSearchPage() {
+  if (!searchPage) {
+    console.log('🔍 [SEARCH-PAGE] Creating dedicated search page...');
+    const browserInstance = await initBrowser();
+    searchPage = await browserInstance.newPage();
+    
+    // 🔴 タイムアウトを延長
+    searchPage.setDefaultNavigationTimeout(30000);
+    searchPage.setDefaultTimeout(30000);
+    
+    await searchPage.setViewport({ width: 1920, height: 1080 });
+    await searchPage.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+    );
+    
+    // 🔴 FIX: Cookieを確実に注入
+    const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
+    if (hasCookies) {
+      try {
+        const validCookies = cachedXCookies.filter(c => c && c.name && c.value);
+        await searchPage.setCookie(...validCookies);
+        console.log('✅ [SEARCH-PAGE] Cookies set:', validCookies.length);
+      } catch (e) {
+        console.error('❌ [SEARCH-PAGE] Cookie error:', e.message);
+      }
+    } else {
+      console.warn('⚠️ [SEARCH-PAGE] No cookies available');
+    }
+    
+    // 🔴 FIX: リクエストインターセプション追加
+    await searchPage.setRequestInterception(true);
+    searchPage.on('request', (request) => {
+      if (request.isInterceptResolutionHandled()) return;
+      
+      const url = request.url();
+      if (url.includes('google.com') || url.includes('gstatic.com')) {
+        request.abort().catch(() => {});
+      } else {
+        request.continue().catch(() => {});
+      }
+    });
+    
+    console.log('✅ [SEARCH-PAGE] Dedicated search page created');
+  }
+  return searchPage;
+}
+
+// 🔴 FIX: サーバー起動時に検索ページを初期化
+(async () => {
+  if (cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0) {
+    try {
+      console.log('🔄 Pre-initializing search page with cached cookies...');
+      await getOrCreateSearchPage();
+      console.log('✅ Search page pre-initialized');
+    } catch (e) {
+      console.log('⚠️ Could not pre-initialize search page:', e.message);
+    }
+  }
+})();
+
+// ===== 🔴 CRITICAL FIX 2: SearchTimelineハンドラーの改善 =====
+// 既存のSearchTimelineハンドラーを以下に置き換え
+
+app.use(`${PROXY_PATH}:encodedUrl*`, async (req, res, next) => {
+  if (req.method !== 'GET') {
+    return next();
+  }
+  
+  try {
+    const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
+    const targetUrl = decodeProxyUrl(encodedUrl);
+    
+    const isSearchTimeline = targetUrl.includes('SearchTimeline') && targetUrl.includes('graphql');
+    
+    if (!isSearchTimeline) {
+      return next();
+    }
+    
+    console.log('🔍 [SEARCH] ✅ Detected SearchTimeline API request');
+    console.log('🔍 [SEARCH] URL:', targetUrl.substring(0, 150) + '...');
+    
+    const urlObj = new URL(targetUrl);
+    const variables = urlObj.searchParams.get('variables');
+    
+    if (!variables) {
+      console.error('❌ [SEARCH] No variables found');
+      return res.status(400).json({ error: 'No search variables found' });
+    }
+    
+    let searchQuery;
+    try {
+      const varsObj = JSON.parse(variables);
+      searchQuery = varsObj.rawQuery;
+      console.log('🔍 [SEARCH] Query:', searchQuery);
+    } catch (e) {
+      console.error('❌ [SEARCH] Invalid variables:', e.message);
+      return res.status(400).json({ error: 'Invalid variables format' });
+    }
+    
+    if (!searchQuery) {
+      console.error('❌ [SEARCH] Empty query');
+      return res.status(400).json({ error: 'No search query found' });
+    }
+    
+    const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
+    
+    if (!hasCookies) {
+      console.error('❌ [SEARCH] No cookies');
+      return res.status(503).json({
+        error: 'Search requires authentication. Please inject cookies first.',
+        hasCookies: false
+      });
+    }
+    
+    // 🔴 FIX: ビジー状態のチェックを簡略化
+    if (searchPageBusy) {
+      console.log('⚠️ [SEARCH] Search page is busy, waiting...');
+      // 🔴 待機してからリトライ
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      if (searchPageBusy) {
+        console.log('❌ [SEARCH] Still busy, returning error');
+        return res.status(503).send(`
+          <!DOCTYPE html>
+          <html>
+          <head><meta charset="UTF-8"><title>検索中...</title></head>
+          <body style="font-family: sans-serif; text-align: center; padding: 50px;">
+            <h1>🔍 別の検索が実行中です</h1>
+            <p>数秒待ってから再度お試しください。</p>
+            <button onclick="history.back()">戻る</button>
+          </body>
+          </html>
+        `);
+      }
+    }
+    
+    searchPageBusy = true;
+    
+    try {
+      console.log('🔍 [SEARCH] Starting search with dedicated page...');
+      
+      const page = await getOrCreateSearchPage();
+      const searchUrl = `https://x.com/search?q=${encodeURIComponent(searchQuery)}&src=typed_query`;
+      console.log('🔍 [SEARCH] Navigation URL:', searchUrl);
+      
+      // 🔴 FIX: ナビゲーション戦略を改善
+      try {
+        await page.goto(searchUrl, {
+          waitUntil: 'domcontentloaded',
+          timeout: 20000
+        });
+        console.log('✅ [SEARCH] Navigation complete');
+      } catch (navError) {
+        console.log('⚠️ [SEARCH] Navigation timeout (continuing):', navError.message);
+      }
+      
+      // 🔴 FIX: コンテンツ読み込みを待つ
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      
+      // 🔴 FIX: HTMLを取得
+      let html = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          console.log(`🔍 [SEARCH] Getting content (attempt ${attempt}/3)...`);
+          html = await page.content();
+          
+          if (html && html.length > 5000) {
+            console.log(`✅ [SEARCH] Got HTML (${html.length} bytes)`);
+            break;
+          }
+          
+          if (attempt < 3) {
+            await new Promise(resolve => setTimeout(resolve, 1500));
+          }
+        } catch (e) {
+          console.log(`❌ [SEARCH] Attempt ${attempt} failed:`, e.message);
+        }
+      }
+      
+      if (!html || html.length < 5000) {
+        throw new Error('Failed to get valid search page content after 3 attempts');
+      }
+      
+      const rewrittenHTML = rewriteHTML(html, targetUrl);
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.send(rewrittenHTML);
+      
+      console.log('✅ [SEARCH] Response sent successfully');
+      
+    } catch (searchError) {
+      console.error('❌ [SEARCH] Error:', searchError.message);
+      console.error('❌ [SEARCH] Stack:', searchError.stack);
+      
+      res.status(500).send(`
+        <!DOCTYPE html>
+        <html>
+        <head><meta charset="UTF-8"><title>検索エラー</title></head>
+        <body style="font-family: sans-serif; text-align: center; padding: 50px;">
+          <h1>🔍 検索に失敗しました</h1>
+          <p><strong>検索:</strong> <code>${searchQuery}</code></p>
+          <p><strong>エラー:</strong> ${searchError.message}</p>
+          <button onclick="location.reload()">再読み込み</button>
+          <button onclick="history.back()">戻る</button>
+        </body>
+        </html>
+      `);
+    } finally {
+      searchPageBusy = false;
+    }
+    
+  } catch (error) {
+    console.error('❌ [SEARCH] Handler error:', error.message);
+    searchPageBusy = false;
+    next();
+  }
+});
+
+// ===== 🔴 CRITICAL FIX 3: タブ切り替え防止の強化版 =====
+// rewriteHTML関数内の interceptScript を以下に置き換え
+
+function rewriteHTML(html, baseUrl) {
+  // ... 既存のコード ...
+  
+  const interceptScript = `
+    <script>
+      (function() {
+        'use strict';
+        
+        const PROXY_ORIGIN = '${proxyOrigin}';
+        const TARGET_ORIGIN = '${origin}';
+        const PROXY_PATH = '${PROXY_PATH}';
+        
+        console.log('[Proxy] 🛡️ Ultra-Strong Protection v3 initializing');
+        
+        // 🔴 FIX 1: visibilitychangeイベントを最優先で監視
+        let isTabVisible = !document.hidden;
+        let reloadBlocked = false;
+        
+        document.addEventListener('visibilitychange', function(e) {
+          const wasHidden = !isTabVisible;
+          isTabVisible = !document.hidden;
+          
+          if (wasHidden && isTabVisible) {
+            console.log('[Proxy] 🚫 Tab became visible - ACTIVATING RELOAD BLOCK');
+            reloadBlocked = true;
+            
+            // 🔴 FIX: location.reloadを完全に無効化
+            const originalReload = window.location.reload;
+            window.location.reload = function() {
+              console.log('[Proxy] 🛑 BLOCKED location.reload()');
+              e.preventDefault();
+              e.stopImmediatePropagation();
+              return false;
+            };
+            
+            // 🔴 FIX: 1秒後に解除
+            setTimeout(() => {
+              window.location.reload = originalReload;
+              reloadBlocked = false;
+              console.log('[Proxy] ✅ Reload block deactivated');
+            }, 1000);
+          }
+        }, true); // 🔴 useCapture = true で最優先実行
+        
+        // 🔴 FIX 2: beforeunloadを完全にブロック
+        window.addEventListener('beforeunload', function(e) {
+          if (reloadBlocked) {
+            console.log('[Proxy] 🛑 BLOCKED beforeunload');
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            return (e.returnValue = false);
+          }
+        }, true);
+        
+        // 🔴 FIX 3: pagehideもブロック
+        window.addEventListener('pagehide', function(e) {
+          if (reloadBlocked) {
+            console.log('[Proxy] 🛑 BLOCKED pagehide');
+            e.preventDefault();
+            e.stopImmediatePropagation();
+          }
+        }, true);
+        
+        // 🔴 FIX 4: location.hrefへの代入を監視
+        const originalLocationDescriptor = Object.getOwnPropertyDescriptor(Location.prototype, 'href');
+        Object.defineProperty(Location.prototype, 'href', {
+          get: function() {
+            return originalLocationDescriptor.get.call(this);
+          },
+          set: function(value) {
+            if (reloadBlocked && value === window.location.href) {
+              console.log('[Proxy] 🛑 BLOCKED location.href = (reload attempt)');
+              return false;
+            }
+            return originalLocationDescriptor.set.call(this, value);
+          },
+          configurable: true,
+          enumerable: true
+        });
+        
+        // 🔴 FIX 5: location.reload自体を上書き
+        Location.prototype.reload = function() {
+          if (reloadBlocked) {
+            console.log('[Proxy] 🛑 BLOCKED Location.prototype.reload()');
+            return false;
+          }
+          return window.location.reload.call(this);
+        };
+        
+        console.log('[Proxy] ✅ Tab switching protection ACTIVE (v3)');
+        
+        // 既存のfetch/XHR intercept...
+        // (以下は既存のコードをそのまま維持)
+      })();
+    </script>
+  `;
+  
+  // ... 残りの既存コード ...
 }
 
 async function initXLoginPage() {
