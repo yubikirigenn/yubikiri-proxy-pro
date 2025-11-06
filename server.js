@@ -171,9 +171,9 @@ function rewriteHTML(html, baseUrl) {
   });
 
   // CSP, スクリプトを簡潔に
-  var cspMeta = '<meta http-equiv="Content-Security-Policy" content="default-src * \'unsafe-inline\' \'unsafe-eval\' data: blob:;">';
-  var earlyScript = '<script>console.log("[Proxy] Early init");</script>';
-  var mainScript = '<script>console.log("[Proxy] Main init");document.addEventListener("visibilitychange",function(){if(!document.hidden){console.log("[Proxy] Tab visible")}});</script>';
+  var cspMeta = '<meta http-equiv="Content-Security-Policy" content="connect-src * blob: data:; default-src * \'unsafe-inline\' \'unsafe-eval\' blob: data:; script-src * \'unsafe-inline\' \'unsafe-eval\' blob:;">';
+  var earlyScript = '<script>(function(){var PROXY_ORIGIN="' + proxyOrigin + '";var PROXY_PATH="' + PROXY_PATH + '";function encodeProxyUrl(u){return PROXY_ORIGIN+PROXY_PATH+btoa(u).replace(/\\+/g,"-").replace(/\\//g,"_").replace(/=/g,"")}var OrigXHR=window.XMLHttpRequest;window.XMLHttpRequest=function(){var xhr=new OrigXHR();var origOpen=xhr.open;xhr.open=function(m,u,a,us,p){if(typeof u==="string"&&u.includes("api.x.com")){console.log("[Proxy] Intercepted:",u);return origOpen.call(this,m,encodeProxyUrl(u),a,us,p)}return origOpen.call(this,m,u,a,us,p)};return xhr};var origFetch=window.fetch;window.fetch=function(r,o){var u=typeof r==="string"?r:(r.url||r);if(u&&u.includes("api.x.com")){console.log("[Proxy] Fetch intercepted:",u);if(typeof r==="string"){return origFetch(encodeProxyUrl(u),o)}else{var nr=new Request(encodeProxyUrl(u),r);return origFetch(nr,o)}}return origFetch(r,o)};console.log("[Proxy] Init OK")})();</script>';
+  var mainScript = '<script>document.addEventListener("visibilitychange",function(){if(!document.hidden){console.log("[Proxy] Tab visible")}},true);</script>';
 
   // <head>に注入
   html = html.replace(/<head([^>]*)>/i, function(match, attrs) {
