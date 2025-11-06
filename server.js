@@ -192,45 +192,6 @@ function rewriteHTML(html, baseUrl) {
   return html;
 }
       
-
-console.log('[Proxy] ✅ All location methods blocked');
-        
-        window.location.replace = function(url) {
-          console.log('[Proxy] 🛑 BLOCKED location.replace:', url);
-          return false;
-        };
-        
-        window.location.assign = function(url) {
-          console.log('[Proxy] 🛑 BLOCKED location.assign:', url);
-          return false;
-        };
-        
-        // fetch
-        const originalFetch = window.fetch;
-        window.fetch = function(resource, options) {
-          let url = typeof resource === 'string' ? resource : (resource.url || resource);
-          if (url && (url.includes('google.com') || url.includes('gstatic.com'))) {
-            return Promise.reject(new Error('Blocked'));
-          }
-          if (url && (url.startsWith('blob:') || url.startsWith('data:'))) {
-            return originalFetch.call(this, resource, options);
-          }
-          if (isAlreadyProxied(url)) {
-            return originalFetch.call(this, resource, options);
-          }
-          const proxiedUrl = proxyUrl(url);
-          if (proxiedUrl !== url) {
-            const newOptions = Object.assign({}, options);
-            if (newOptions.mode === 'cors') delete newOptions.mode;
-            if (typeof resource === 'string') {
-              return originalFetch.call(this, proxiedUrl, newOptions);
-            } else {
-              return originalFetch.call(this, new Request(proxiedUrl, newOptions));
-            }
-          }
-          return html;
-}
-
 // ===== 6. PUPPETEER FUNCTIONS =====
 async function loadPuppeteer() {
   if (process.env.RENDER) {
