@@ -798,6 +798,56 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
           const rewrittenHTML = rewriteHTML(htmlContent, targetUrl);
           res.setHeader('Content-Type', 'text/html; charset=utf-8');
           res.setHeader('Access-Control-Allow-Origin', '*');
+
+// 🔴 NEW: X.comドメインの場合、Cookieをブラウザに送信
+if (isXDomain && hasCookies) {
+  try {
+    console.log('🍪 [COOKIE-FIX] Sending cookies to browser...');
+    
+    // Set-Cookieヘッダー形式に変換
+    const setCookieHeaders = cachedXCookies
+      .filter(c => c && c.name && c.value)
+      .map(c => {
+        // プロキシドメイン用のCookie設定
+        const proxyDomain = process.env.RENDER 
+          ? '.onrender.com'  // Render環境
+          : 'localhost';      // ローカル環境
+        
+        // Cookieの属性を構築
+        const parts = [
+          `${c.name}=${c.value}`,
+          `Path=/`,
+          `Max-Age=${60 * 60 * 24 * 365}`, // 1年間有効
+        ];
+        
+        // Render環境の場合のみSecureを追加
+        if (process.env.RENDER) {
+          parts.push('Secure');
+        }
+        
+        // SameSite属性
+        if (c.name === 'ct0') {
+          parts.push('SameSite=Lax');
+        } else {
+          parts.push('SameSite=None');
+          if (!process.env.RENDER) {
+            // ローカル環境でSameSite=Noneの場合はSecure必須
+            parts.push('Secure');
+          }
+        }
+        
+        return parts.join('; ');
+      });
+    
+    if (setCookieHeaders.length > 0) {
+      res.setHeader('Set-Cookie', setCookieHeaders);
+      console.log(`🍪 [COOKIE-FIX] Set ${setCookieHeaders.length} cookies in response`);
+      console.log('🍪 [COOKIE-FIX] Cookie names:', cachedXCookies.map(c => c.name).join(', '));
+    }
+  } catch (e) {
+    console.error('❌ [COOKIE-FIX] Failed to set cookies:', e.message);
+  }
+}
           return res.send(rewrittenHTML);
           
         } else {
@@ -884,6 +934,55 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
         const rewrittenHTML = rewriteHTML(htmlContent, targetUrl);
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
         res.setHeader('Access-Control-Allow-Origin', '*');
+        // 🔴 NEW: X.comドメインの場合、Cookieをブラウザに送信
+if (isXDomain && hasCookies) {
+  try {
+    console.log('🍪 [COOKIE-FIX] Sending cookies to browser...');
+    
+    // Set-Cookieヘッダー形式に変換
+    const setCookieHeaders = cachedXCookies
+      .filter(c => c && c.name && c.value)
+      .map(c => {
+        // プロキシドメイン用のCookie設定
+        const proxyDomain = process.env.RENDER 
+          ? '.onrender.com'  // Render環境
+          : 'localhost';      // ローカル環境
+        
+        // Cookieの属性を構築
+        const parts = [
+          `${c.name}=${c.value}`,
+          `Path=/`,
+          `Max-Age=${60 * 60 * 24 * 365}`, // 1年間有効
+        ];
+        
+        // Render環境の場合のみSecureを追加
+        if (process.env.RENDER) {
+          parts.push('Secure');
+        }
+        
+        // SameSite属性
+        if (c.name === 'ct0') {
+          parts.push('SameSite=Lax');
+        } else {
+          parts.push('SameSite=None');
+          if (!process.env.RENDER) {
+            // ローカル環境でSameSite=Noneの場合はSecure必須
+            parts.push('Secure');
+          }
+        }
+        
+        return parts.join('; ');
+      });
+    
+    if (setCookieHeaders.length > 0) {
+      res.setHeader('Set-Cookie', setCookieHeaders);
+      console.log(`🍪 [COOKIE-FIX] Set ${setCookieHeaders.length} cookies in response`);
+      console.log('🍪 [COOKIE-FIX] Cookie names:', cachedXCookies.map(c => c.name).join(', '));
+    }
+  } catch (e) {
+    console.error('❌ [COOKIE-FIX] Failed to set cookies:', e.message);
+  }
+}
         res.send(rewrittenHTML);
 
       } catch (navError) {
