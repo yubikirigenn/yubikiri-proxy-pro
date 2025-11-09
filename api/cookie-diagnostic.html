@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cookie診断ツール</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
+      color: #fff;
+      padding: 40px 20px;
+      min-height: 100vh;
+    }
+    .container { max-width: 1000px; margin: 0 auto; }
+    h1 {
+      font-size: 32px;
+      margin-bottom: 20px;
+      text-align: center;
+      background: linear-gradient(135deg, #fff 0%, rgba(255,255,255,0.9) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .card {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px;
+      padding: 30px;
+      margin-bottom: 20px;
+    }
+    .status-box {
+      padding: 20px;
+      border-radius: 8px;
+      margin: 15px 0;
+      font-size: 14px;
+      line-height: 1.8;
+    }
+    .status-ok {
+      background: rgba(76,175,80,0.1);
+      border: 2px solid #4CAF50;
+    }
+    .status-warning {
+      background: rgba(255,193,7,0.1);
+      border: 2px solid #FFC107;
+    }
+    .status-error {
+      background: rgba(244,67,54,0.1);
+      border: 2px solid #f44336;
+    }
+    button {
+      width: 100%;
+      padding: 14px 24px;
+      background: #2196F3;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      margin: 10px 0;
+    }
+    button:hover:not(:disabled) {
+      background: #1976D2;
+      transform: translateY(-2px);
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .cookie-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+      font-size: 12px;
+    }
+    .cookie-table th {
+      background: rgba(255,255,255,0.1);
+      padding: 12px;
+      text-align: left;
+      border-bottom: 2px solid rgba(255,255,255,0.2);
+    }
+    .cookie-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+    }
+    .cookie-table tr:hover {
+      background: rgba(255,255,255,0.05);
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .badge-ok { background: #4CAF50; color: #fff; }
+    .badge-expired { background: #f44336; color: #fff; }
+    .badge-missing { background: #FF9800; color: #fff; }
+    code {
+      background: rgba(0,0,0,0.3);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+    }
+    pre {
+      background: rgba(0,0,0,0.3);
+      padding: 15px;
+      border-radius: 6px;
+      overflow-x: auto;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .section-title {
+      font-size: 20px;
+      color: #b0b0b0;
+      margin: 30px 0 15px 0;
+      padding-bottom: 8px;
+      border-bottom: 2px solid rgba(255,255,255,0.1);
+    }
+    .checklist {
+      list-style: none;
+      margin: 15px 0;
+    }
+    .checklist li {
+      padding: 10px;
+      margin: 8px 0;
+      background: rgba(255,255,255,0.05);
+      border-radius: 6px;
+      border-left: 4px solid transparent;
+    }
+    .checklist li.ok { border-left-color: #4CAF50; }
+    .checklist li.error { border-left-color: #f44336; }
+    .checklist li.warning { border-left-color: #FFC107; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔍 Cookie診断ツール</h1>
+    
+    <div class="card">
+      <h2 style="margin-bottom: 15px; color: #b0b0b0;">📊 サーバー側Cookie状態</h2>
+      <p style="color: rgba(255,255,255,0.7); margin-bottom: 15px;">
+        サーバーにキャッシュされているCookieを診断します
+      </p>
+      
+      <button id="checkServerBtn">🔄 サーバーCookieを診断</button>
+      
+      <div id="serverResult" style="display: none; margin-top: 20px;">
+        <div class="section-title">診断結果</div>
+        <div id="serverStatus"></div>
+        <div id="serverDetails"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-bottom: 15px; color: #b0b0b0;">🌐 ブラウザ側Cookie状態</h2>
+      <p style="color: rgba(255,255,255,0.7); margin-bottom: 15px;">
+        現在のブラウザに保存されているCookieを確認します
+      </p>
+      
+      <button id="checkBrowserBtn">🔄 ブラウザCookieを確認</button>
+      
+      <div id="browserResult" style="display: none; margin-top: 20px;">
+        <div class="section-title">ブラウザCookie</div>
+        <div id="browserStatus"></div>
+        <div id="browserDetails"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-bottom: 15px; color: #b0b0b0;">🧪 API呼び出しテスト</h2>
+      <p style="color: rgba(255,255,255,0.7); margin-bottom: 15px;">
+        実際のX.com APIにリクエストを送信してテストします
+      </p>
+      
+      <button id="testApiBtn">🚀 API呼び出しテスト</button>
+      
+      <div id="apiResult" style="display: none; margin-top: 20px;">
+        <div class="section-title">APIテスト結果</div>
+        <div id="apiStatus"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-bottom: 15px; color: #b0b0b0;">📋 総合診断レポート</h2>
+      <div id="summaryReport" style="display: none;">
+        <ul class="checklist" id="checklistItems"></ul>
+        
+        <div class="section-title">推奨アクション</div>
+        <div id="recommendations"></div>
+      </div>
+      
+      <button id="generateReportBtn" style="background: #4CAF50;">📄 総合診断レポート生成</button>
+    </div>
+  </div>
+
+  <script>
+    const REQUIRED_COOKIES = ['auth_token', 'ct0'];
+    const RECOMMENDED_COOKIES = ['twid', 'guest_id', 'personalization_id', 'guest_id_marketing', 'guest_id_ads'];
+    const OPTIONAL_COOKIES = ['kdt', 'dnt', 'd_prefs', 'lang'];
+
+    let serverData = null;
+    let browserData = null;
+    let apiData = null;
+
+    // サーバーCookie診断
+    document.getElementById('checkServerBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('checkServerBtn');
+      const result = document.getElementById('serverResult');
+      const status = document.getElementById('serverStatus');
+      const details = document.getElementById('serverDetails');
+
+      btn.disabled = true;
+      btn.textContent = '診断中...';
+
+      try {
+        const response = await fetch('/api/x-cookies-debug');
+        const data = await response.json();
+        serverData = data;
+
+        result.style.display = 'block';
+
+        // ステータス判定
+        let statusClass = 'status-error';
+        let statusText = '❌ Cookie不足';
+
+        if (data.success && data.cookieCount >= 10 && data.hasAuthToken && data.hasCt0) {
+          statusClass = 'status-ok';
+          statusText = '✅ Cookie正常';
+        } else if (data.success && data.cookieCount >= 5) {
+          statusClass = 'status-warning';
+          statusText = '⚠️ Cookie不足の可能性';
+        }
+
+        status.innerHTML = `
+          <div class="${statusClass}">
+            <strong>${statusText}</strong><br>
+            Cookie数: <strong>${data.cookieCount || 0}</strong>個<br>
+            auth_token: <strong>${data.hasAuthToken ? '✅ あり' : '❌ なし'}</strong><br>
+            ct0: <strong>${data.hasCt0 ? '✅ あり' : '❌ なし'}</strong>
+          </div>
+        `;
+
+        if (data.cookies && data.cookies.length > 0) {
+          let tableHTML = `
+            <table class="cookie-table">
+              <thead>
+                <tr>
+                  <th>Cookie名</th>
+                  <th>状態</th>
+                  <th>有効期限</th>
+                  <th>値の長さ</th>
+                </tr>
+              </thead>
+              <tbody>
+          `;
+
+          data.cookies.forEach(cookie => {
+            const isExpired = cookie.isExpired;
+            const badge = isExpired 
+              ? '<span class="badge badge-expired">期限切れ</span>'
+              : '<span class="badge badge-ok">有効</span>';
+            
+            const hasValue = cookie.hasValue 
+              ? `${cookie.valueLength}文字`
+              : '空';
+
+            tableHTML += `
+              <tr>
+                <td><code>${cookie.name}</code></td>
+                <td>${badge}</td>
+                <td>${cookie.expires || 'セッション'}</td>
+                <td>${hasValue}</td>
+              </tr>
+            `;
+          });
+
+          tableHTML += '</tbody></table>';
+          details.innerHTML = tableHTML;
+        }
+
+        btn.textContent = '✅ 診断完了';
+        btn.style.background = '#4CAF50';
+
+      } catch (error) {
+        status.innerHTML = `
+          <div class="status-error">
+            <strong>❌ 診断エラー</strong><br>
+            ${error.message}
+          </div>
+        `;
+        result.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = '🔄 サーバーCookieを診断';
+      }
+    });
+
+    // ブラウザCookie確認
+    document.getElementById('checkBrowserBtn').addEventListener('click', () => {
+      const btn = document.getElementById('checkBrowserBtn');
+      const result = document.getElementById('browserResult');
+      const status = document.getElementById('browserStatus');
+      const details = document.getElementById('browserDetails');
+
+      btn.disabled = true;
+      btn.textContent = '確認中...';
+
+      try {
+        const cookieString = document.cookie;
+        
+        if (!cookieString) {
+          throw new Error('ブラウザにCookieが保存されていません');
+        }
+
+        const cookiePairs = cookieString.split(';');
+        const cookies = {};
+        
+        cookiePairs.forEach(pair => {
+          const [name, value] = pair.trim().split('=');
+          if (name && value) {
+            cookies[name] = value;
+          }
+        });
+
+        browserData = cookies;
+        const count = Object.keys(cookies).length;
+
+        result.style.display = 'block';
+
+        const hasAuthToken = !!cookies['auth_token'];
+        const hasCt0 = !!cookies['ct0'];
+
+        let statusClass = 'status-warning';
+        let statusText = '⚠️ auth_tokenが取得できません（HttpOnly）';
+
+        if (count >= 8 && hasCt0) {
+          statusClass = 'status-ok';
+          statusText = '✅ ブラウザCookie確認完了';
+        } else if (count < 5) {
+          statusClass = 'status-error';
+          statusText = '❌ Cookie数が少なすぎます';
+        }
+
+        status.innerHTML = `
+          <div class="${statusClass}">
+            <strong>${statusText}</strong><br>
+            取得Cookie数: <strong>${count}</strong>個<br>
+            auth_token: <strong>${hasAuthToken ? '✅ あり' : '⚠️ なし (HttpOnly)'}</strong><br>
+            ct0: <strong>${hasCt0 ? '✅ あり' : '❌ なし'}</strong>
+          </div>
+        `;
+
+        details.innerHTML = `
+          <pre>${JSON.stringify(cookies, null, 2)}</pre>
+          <p style="color: rgba(255,255,255,0.6); font-size: 12px; margin-top: 10px;">
+            ℹ️ auth_tokenはHttpOnlyのため、document.cookieでは取得できません
+          </p>
+        `;
+
+        btn.textContent = '✅ 確認完了';
+        btn.style.background = '#4CAF50';
+
+      } catch (error) {
+        status.innerHTML = `
+          <div class="status-error">
+            <strong>❌ 確認エラー</strong><br>
+            ${error.message}
+          </div>
+        `;
+        result.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = '🔄 ブラウザCookieを確認';
+      }
+    });
+
+    // APIテスト
+    document.getElementById('testApiBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('testApiBtn');
+      const result = document.getElementById('apiResult');
+      const status = document.getElementById('apiStatus');
+
+      btn.disabled = true;
+      btn.textContent = 'テスト中...';
+
+      try {
+        // まずサーバーCookieを確認
+        const cookieCheck = await fetch('/api/x-cookies-debug');
+        const cookieData = await cookieCheck.json();
+
+        if (!cookieData.success || !cookieData.hasAuthToken) {
+          throw new Error('Cookieが不足しています。まずCookieを注入してください。');
+        }
+
+        // 簡易的なAPIテスト（プロキシ経由でX.comにアクセス）
+        const testUrl = 'https://api.x.com/1.1/account/verify_credentials.json';
+        const encodedUrl = btoa(testUrl).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+        
+        const apiResponse = await fetch(`/proxy/${encodedUrl}`, {
+          method: 'GET',
+          credentials: 'include'
+        });
+
+        apiData = {
+          status: apiResponse.status,
+          ok: apiResponse.ok
+        };
+
+        result.style.display = 'block';
+
+        if (apiResponse.ok) {
+          status.innerHTML = `
+            <div class="status-ok">
+              <strong>✅ API呼び出し成功</strong><br>
+              ステータス: ${apiResponse.status}<br>
+              認証が正常に機能しています
+            </div>
+          `;
+        } else {
+          const errorText = await apiResponse.text();
+          status.innerHTML = `
+            <div class="status-error">
+              <strong>❌ API呼び出し失敗</strong><br>
+              ステータス: ${apiResponse.status}<br>
+              エラー: ${errorText.substring(0, 200)}...
+            </div>
+          `;
+        }
+
+        btn.textContent = '✅ テスト完了';
+        btn.style.background = apiResponse.ok ? '#4CAF50' : '#f44336';
+
+      } catch (error) {
+        status.innerHTML = `
+          <div class="status-error">
+            <strong>❌ テストエラー</strong><br>
+            ${error.message}
+          </div>
+        `;
+        result.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = '🚀 API呼び出しテスト';
+      }
+    });
+
+    // 総合診断レポート生成
+    document.getElementById('generateReportBtn').addEventListener('click', () => {
+      const report = document.getElementById('summaryReport');
+      const checklist = document.getElementById('checklistItems');
+      const recommendations = document.getElementById('recommendations');
+
+      if (!serverData) {
+        alert('まず「サーバーCookieを診断」を実行してください');
+        return;
+      }
+
+      report.style.display = 'block';
+
+      // チェックリスト生成
+      const checks = [
+        {
+          label: 'サーバーにCookieがキャッシュされている',
+          ok: serverData && serverData.success && serverData.cookieCount > 0,
+          critical: true
+        },
+        {
+          label: 'auth_tokenが存在する',
+          ok: serverData && serverData.hasAuthToken,
+          critical: true
+        },
+        {
+          label: 'ct0が存在する',
+          ok: serverData && serverData.hasCt0,
+          critical: true
+        },
+        {
+          label: 'Cookie数が10個以上',
+          ok: serverData && serverData.cookieCount >= 10,
+          critical: false
+        },
+        {
+          label: 'Cookieが有効期限内',
+          ok: serverData && serverData.cookies && !serverData.cookies.some(c => c.isExpired),
+          critical: true
+        }
+      ];
+
+      let checklistHTML = '';
+      let failedCritical = [];
+
+      checks.forEach(check => {
+        const className = check.ok ? 'ok' : (check.critical ? 'error' : 'warning');
+        const icon = check.ok ? '✅' : (check.critical ? '❌' : '⚠️');
+        
+        checklistHTML += `<li class="${className}">${icon} ${check.label}</li>`;
+        
+        if (!check.ok && check.critical) {
+          failedCritical.push(check.label);
+        }
+      });
+
+      checklist.innerHTML = checklistHTML;
+
+      // 推奨アクション
+      let recommendHTML = '';
+
+      if (failedCritical.length > 0) {
+        recommendHTML = `
+          <div class="status-error">
+            <strong>🚨 緊急: 以下の問題を解決してください</strong><br><br>
+            ${failedCritical.map(item => `• ${item}`).join('<br>')}
+            <br><br>
+            <strong>解決策:</strong><br>
+            1. Cookie Helperで全てのCookieを再注入<br>
+            2. 特にauth_tokenとct0を必ず含める<br>
+            3. X.comで新しいCookieを取得する
+          </div>
+        `;
+      } else if (!serverData || serverData.cookieCount < 10) {
+        recommendHTML = `
+          <div class="status-warning">
+            <strong>⚠️ Cookie数を増やすことを推奨</strong><br><br>
+            現在: ${serverData ? serverData.cookieCount : 0}個<br>
+            推奨: 12個以上<br><br>
+            <strong>追加推奨Cookie:</strong><br>
+            • guest_id<br>
+            • personalization_id<br>
+            • guest_id_marketing<br>
+            • guest_id_ads<br>
+            • twid
+          </div>
+        `;
+      } else {
+        recommendHTML = `
+          <div class="status-ok">
+            <strong>✅ Cookieの状態は良好です</strong><br><br>
+            次のステップ:<br>
+            1. /home でタイムライン表示をテスト<br>
+            2. ツイートが表示されない場合はブラウザコンソールを確認<br>
+            3. エラーがあればサポートに報告
+          </div>
+        `;
+      }
+
+      recommendations.innerHTML = recommendHTML;
+    });
+  </script>
+</body>
+</html> 
