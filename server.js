@@ -728,34 +728,26 @@ app.use(`${PROXY_PATH}:encodedUrl*`, async (req, res, next) => {
 // 🔴 CRITICAL: GET proxy route with Puppeteer
 app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
   console.log('🔵 [PROXY] GET request received');
-  console.log('🔵 [PROXY] params:', req.params);
-  console.log('🔵 [PROXY] path:', req.path);
   
   try {
     const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
-    console.log('🔵 [PROXY] encodedUrl:', encodedUrl.substring(0, 100) + '...');
-    
     const targetUrl = decodeProxyUrl(encodedUrl);
-    console.log('📡 GET Proxying:', targetUrl);
+    console.log('🔡 GET Proxying:', targetUrl);
 
     const parsedUrl = new url.URL(targetUrl);
     const isXDomain = parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com');
     
-    // APIエンドポイントかどうかを判定
     const isApiEndpoint = parsedUrl.hostname.includes('api.x.com') || 
                           parsedUrl.pathname.includes('.json') ||
                           parsedUrl.pathname.includes('graphql');
     
-    // 動画・メディアファイルの判定
     const isMediaFile = parsedUrl.pathname.match(/\.(js|css|json|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|mp4|webm|m3u8|ts|m4s|mpd)$/i) ||
                         parsedUrl.hostname.includes('video.twimg.com') ||
                         parsedUrl.hostname.includes('video-s.twimg.com') ||
                         parsedUrl.hostname.includes('pbs.twimg.com') ||
                         parsedUrl.hostname.includes('abs.twimg.com');
     
-    // HTMLページかどうかを判定（API・メディアは除外）
     const isHTML = !isApiEndpoint && !isMediaFile;
-
     console.log(`📊 Type: isHTML=${isHTML}, isAPI=${isApiEndpoint}, isMedia=${isMediaFile}`);
     
     const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
@@ -769,7 +761,6 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
 
       try {
         if (useXLoginPageShared) {
-          // xLoginPageを使用（キューイングシステムで処理）
           console.log('♻️ Using shared xLoginPage');
           
           const htmlContent = await useXLoginPage(async () => {
@@ -798,56 +789,47 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
           const rewrittenHTML = rewriteHTML(htmlContent, targetUrl);
           res.setHeader('Content-Type', 'text/html; charset=utf-8');
           res.setHeader('Access-Control-Allow-Origin', '*');
-
-// 🔴 NEW: X.comドメインの場合、Cookieをブラウザに送信
-if (isXDomain && hasCookies) {
-  try {
-    console.log('🍪 [COOKIE-FIX] Sending cookies to browser...');
-    
-    // Set-Cookieヘッダー形式に変換
-    const setCookieHeaders = cachedXCookies
-      .filter(c => c && c.name && c.value)
-      .map(c => {
-        // プロキシドメイン用のCookie設定
-        const proxyDomain = process.env.RENDER 
-          ? '.onrender.com'  // Render環境
-          : 'localhost';      // ローカル環境
-        
-        // Cookieの属性を構築
-        const parts = [
-          `${c.name}=${c.value}`,
-          `Path=/`,
-          `Max-Age=${60 * 60 * 24 * 365}`, // 1年間有効
-        ];
-        
-        // Render環境の場合のみSecureを追加
-        if (process.env.RENDER) {
-          parts.push('Secure');
-        }
-        
-        // SameSite属性
-        if (c.name === 'ct0') {
-          parts.push('SameSite=Lax');
-        } else {
-          parts.push('SameSite=None');
-          if (!process.env.RENDER) {
-            // ローカル環境でSameSite=Noneの場合はSecure必須
-            parts.push('Secure');
+          
+          // 🔴 CRITICAL: Send cookies to browser
+          if (isXDomain && hasCookies) {
+            try {
+              console.log('🍪 [COOKIE] Sending cookies to browser...');
+              console.log('🍪 [COOKIE] Cookie count:', cachedXCookies.length);
+              
+              const setCookieHeaders = cachedXCookies
+                .filter(c => c && c.name && c.value)
+                .map(c => {
+                  const parts = [
+                    `${c.name}=${c.value}`,
+                    `Path=/`,
+                    `Max-Age=${60 * 60 * 24 * 365}`,
+                  ];
+                  
+                  if (process.env.RENDER) {
+                    parts.push('Secure');
+                  }
+                  
+                  if (c.name === 'ct0') {
+                    parts.push('SameSite=Lax');
+                  } else {
+                    parts.push('SameSite=None');
+                    if (!process.env.RENDER) {
+                      parts.push('Secure');
+                    }
+                  }
+                  
+                  return parts.join('; ');
+                });
+              
+              if (setCookieHeaders.length > 0) {
+                res.setHeader('Set-Cookie', setCookieHeaders);
+                console.log('✅ [COOKIE] Set-Cookie header added:', setCookieHeaders.length, 'cookies');
+              }
+            } catch (e) {
+              console.error('❌ [COOKIE] Failed:', e.message);
+            }
           }
-        }
-        
-        return parts.join('; ');
-      });
-    
-    if (setCookieHeaders.length > 0) {
-      res.setHeader('Set-Cookie', setCookieHeaders);
-      console.log(`🍪 [COOKIE-FIX] Set ${setCookieHeaders.length} cookies in response`);
-      console.log('🍪 [COOKIE-FIX] Cookie names:', cachedXCookies.map(c => c.name).join(', '));
-    }
-  } catch (e) {
-    console.error('❌ [COOKIE-FIX] Failed to set cookies:', e.message);
-  }
-}
+          
           return res.send(rewrittenHTML);
           
         } else {
@@ -855,7 +837,6 @@ if (isXDomain && hasCookies) {
           const browserInstance = await initBrowser();
           page = await browserInstance.newPage();
           
-          // タイムアウトを延長
           page.setDefaultNavigationTimeout(60000);
           page.setDefaultTimeout(60000);
           
@@ -864,7 +845,6 @@ if (isXDomain && hasCookies) {
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
           );
 
-          // X.com用のCookieをセット
           if (isXDomain && hasCookies) {
             try {
               const validCookies = cachedXCookies.filter(c => c && c.name && c.value);
@@ -878,11 +858,9 @@ if (isXDomain && hasCookies) {
           }
         }
 
-        // ナビゲーション（X.comは読み込みが遅いので戦略を変更）
         console.log(`🌐 Navigating to: ${targetUrl}`);
         
         if (isXDomain) {
-          // X.com専用の読み込み戦略
           try {
             await page.goto(targetUrl, {
               waitUntil: 'domcontentloaded',
@@ -890,10 +868,9 @@ if (isXDomain && hasCookies) {
             });
             console.log('✅ DOM loaded');
           } catch (navErr) {
-            console.log('⚠️ Navigation timeout, but DOM may be loaded:', navErr.message);
+            console.log('⚠️ Navigation timeout:', navErr.message);
           }
 
-          // X.comの主要な要素が出現するまで待機（タイムアウト付き）
           try {
             await Promise.race([
               page.waitForSelector('div[data-testid="primaryColumn"]', { timeout: 10000 }),
@@ -905,10 +882,8 @@ if (isXDomain && hasCookies) {
             console.log('⚠️ Main content not detected, continuing anyway');
           }
 
-          // さらに少し待機（動的コンテンツの読み込み）
           await new Promise(resolve => setTimeout(resolve, 3000));
         } else {
-          // 通常サイトの読み込み戦略
           try {
             await page.goto(targetUrl, {
               waitUntil: 'networkidle2',
@@ -921,84 +896,71 @@ if (isXDomain && hasCookies) {
           await new Promise(resolve => setTimeout(resolve, 2000));
         }
 
-        // HTMLを取得
         const htmlContent = await page.content();
         console.log(`✅ Page loaded successfully (${htmlContent.length} bytes)`);
 
-        // 新しく作成したページをクローズ（xLoginPageは維持）
         if (page && page !== xLoginPage) {
           await page.close();
         }
 
-        // HTMLを書き換えて送信
         const rewrittenHTML = rewriteHTML(htmlContent, targetUrl);
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
         res.setHeader('Access-Control-Allow-Origin', '*');
-        // 🔴 NEW: X.comドメインの場合、Cookieをブラウザに送信
-if (isXDomain && hasCookies) {
-  try {
-    console.log('🍪 [COOKIE-FIX] Sending cookies to browser...');
-    
-    // Set-Cookieヘッダー形式に変換
-    const setCookieHeaders = cachedXCookies
-      .filter(c => c && c.name && c.value)
-      .map(c => {
-        // プロキシドメイン用のCookie設定
-        const proxyDomain = process.env.RENDER 
-          ? '.onrender.com'  // Render環境
-          : 'localhost';      // ローカル環境
         
-        // Cookieの属性を構築
-        const parts = [
-          `${c.name}=${c.value}`,
-          `Path=/`,
-          `Max-Age=${60 * 60 * 24 * 365}`, // 1年間有効
-        ];
-        
-        // Render環境の場合のみSecureを追加
-        if (process.env.RENDER) {
-          parts.push('Secure');
-        }
-        
-        // SameSite属性
-        if (c.name === 'ct0') {
-          parts.push('SameSite=Lax');
-        } else {
-          parts.push('SameSite=None');
-          if (!process.env.RENDER) {
-            // ローカル環境でSameSite=Noneの場合はSecure必須
-            parts.push('Secure');
+        // 🔴 CRITICAL: Send cookies to browser
+        if (isXDomain && hasCookies) {
+          try {
+            console.log('🍪 [COOKIE] Sending cookies to browser...');
+            console.log('🍪 [COOKIE] Cookie count:', cachedXCookies.length);
+            
+            const setCookieHeaders = cachedXCookies
+              .filter(c => c && c.name && c.value)
+              .map(c => {
+                const parts = [
+                  `${c.name}=${c.value}`,
+                  `Path=/`,
+                  `Max-Age=${60 * 60 * 24 * 365}`,
+                ];
+                
+                if (process.env.RENDER) {
+                  parts.push('Secure');
+                }
+                
+                if (c.name === 'ct0') {
+                  parts.push('SameSite=Lax');
+                } else {
+                  parts.push('SameSite=None');
+                  if (!process.env.RENDER) {
+                    parts.push('Secure');
+                  }
+                }
+                
+                return parts.join('; ');
+              });
+            
+            if (setCookieHeaders.length > 0) {
+              res.setHeader('Set-Cookie', setCookieHeaders);
+              console.log('✅ [COOKIE] Set-Cookie header added:', setCookieHeaders.length, 'cookies');
+            }
+          } catch (e) {
+            console.error('❌ [COOKIE] Failed:', e.message);
           }
         }
         
-        return parts.join('; ');
-      });
-    
-    if (setCookieHeaders.length > 0) {
-      res.setHeader('Set-Cookie', setCookieHeaders);
-      console.log(`🍪 [COOKIE-FIX] Set ${setCookieHeaders.length} cookies in response`);
-      console.log('🍪 [COOKIE-FIX] Cookie names:', cachedXCookies.map(c => c.name).join(', '));
-    }
-  } catch (e) {
-    console.error('❌ [COOKIE-FIX] Failed to set cookies:', e.message);
-  }
-}
         res.send(rewrittenHTML);
 
       } catch (navError) {
         console.error('❌ Navigation error:', navError.message);
         
-        // abortedエラーの場合は無視（ページ遷移によるキャンセル）
         if (navError.message.includes('aborted') || navError.message.includes('ERR_ABORTED')) {
-          console.log('⚠️ Request aborted (likely page navigation), returning empty response');
-          res.status(204).send(); // No Content
+          console.log('⚠️ Request aborted, returning 204');
+          res.status(204).send();
           if (!useXLoginPageShared && page) {
             await page.close().catch(() => {});
           }
           return;
         }
         
-        // エラーページを表示
         res.status(500).send(`
           <!DOCTYPE html>
           <html>
@@ -1056,7 +1018,6 @@ if (isXDomain && hasCookies) {
           </html>
         `);
         
-        // 新しく作成したページをクローズ
         if (page && page !== xLoginPage) {
           await page.close().catch(() => {});
         }
@@ -1071,55 +1032,41 @@ if (isXDomain && hasCookies) {
         'Referer': `${parsedUrl.protocol}//${parsedUrl.host}/`,
       };
 
-      // X.com用のCookie（APIエンドポイント含む）
-if (isXDomain && hasCookies) {
-  try {
-    const cookieString = cachedXCookies
-      .filter(c => c && c.name && c.value)
-      .map(c => `${c.name}=${c.value}`)
-      .join('; ');
-    
-    if (cookieString) {
-      headers['Cookie'] = cookieString;
-      console.log('🍪 Using cached cookies for resource');
-    }
-    
-    // API用の追加ヘッダー
-if (isApiEndpoint) {
-  const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
-  if (ct0Cookie && ct0Cookie.value) {
-    headers['x-csrf-token'] = ct0Cookie.value;
-    console.log('🔐 Added CSRF token for API');
-  }
-  
-  headers['x-twitter-active-user'] = 'yes';
-  headers['x-twitter-client-language'] = 'en';
-  headers['x-twitter-auth-type'] = 'OAuth2Session';
-  
-  // 🔴 Refererを追加（検索API用）
-  if (targetUrl.includes('SearchTimeline')) {
-    headers['Referer'] = 'https://x.com/search';
-    console.log('🔗 Added Referer for SearchTimeline');
-  }
-  
-  // GraphQL用
-  if (targetUrl.includes('graphql')) {
-    headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
-    console.log('🔑 Added GraphQL bearer token');
-    
-    // 🔴 Query IDを抽出してログ出力
-    const queryIdMatch = targetUrl.match(/graphql\/([^\/]+)\//);
-    if (queryIdMatch) {
-      console.log('🔍 GraphQL Query ID:', queryIdMatch[1]);
-    }
-  }
-  
-  console.log('📤 API headers set:', Object.keys(headers));
-}
-  } catch (e) {
-    console.log('⚠️ Cookie error:', e.message);
-  }
-}
+      if (isXDomain && hasCookies) {
+        try {
+          const cookieString = cachedXCookies
+            .filter(c => c && c.name && c.value)
+            .map(c => `${c.name}=${c.value}`)
+            .join('; ');
+          
+          if (cookieString) {
+            headers['Cookie'] = cookieString;
+            console.log('🍪 Using cached cookies for resource');
+          }
+          
+          if (isApiEndpoint) {
+            const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
+            if (ct0Cookie && ct0Cookie.value) {
+              headers['x-csrf-token'] = ct0Cookie.value;
+              console.log('🔐 Added CSRF token for API');
+            }
+            
+            headers['x-twitter-active-user'] = 'yes';
+            headers['x-twitter-client-language'] = 'en';
+            headers['x-twitter-auth-type'] = 'OAuth2Session';
+            
+            if (targetUrl.includes('SearchTimeline')) {
+              headers['Referer'] = 'https://x.com/search';
+            }
+            
+            if (targetUrl.includes('graphql')) {
+              headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
+            }
+          }
+        } catch (e) {
+          console.log('⚠️ Cookie error:', e.message);
+        }
+      }
 
       const response = await axios({
         method: 'GET',
@@ -1134,37 +1081,20 @@ if (isApiEndpoint) {
       console.log(`📥 Resource loaded: ${response.status}`);
       
       if (response.status === 400 || response.status === 404) {
-  console.log('❌ Resource Error:', response.status, 'for', targetUrl);
-  
-  try {
-    const errorBody = response.data.toString('utf-8');
-    console.log('❌ Full Error body:', errorBody);
-    
-    // 🔴 認証エラーの場合、特別な処理
-    if (errorBody.includes('"code":215') || errorBody.includes('Bad Authentication')) {
-      console.log('🚨 AUTHENTICATION ERROR - Cookies may be invalid or insufficient');
-      console.log('🚨 Current cookie count:', cachedXCookies ? cachedXCookies.length : 0);
-      console.log('🚨 Please inject more cookies using /x-cookie-helper.html');
-      
-      // クライアントにエラーメッセージを返す
-      const contentType = response.headers['content-type'] || 'application/json';
-      res.setHeader('Content-Type', contentType);
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('X-Proxy-Error', 'Authentication Failed - More cookies required');
-      res.status(response.status).send(response.data);
-      return;
-    }
-  } catch (e) {
-    console.log('❌ Could not parse error body:', e.message);
-  }
-  
-  // その他のエラーはそのまま返す
-  const contentType = response.headers['content-type'] || 'application/octet-stream';
-  res.setHeader('Content-Type', contentType);
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.status(response.status).send(response.data);
-  return;
-}
+        console.log('❌ Resource Error:', response.status, 'for', targetUrl);
+        
+        try {
+          const errorBody = response.data.toString('utf-8');
+          console.log('❌ Error body:', errorBody.substring(0, 200));
+          
+          if (errorBody.includes('"code":215') || errorBody.includes('Bad Authentication')) {
+            console.log('🚨 AUTHENTICATION ERROR - Cookies may be invalid');
+            res.setHeader('X-Proxy-Error', 'Authentication Failed');
+          }
+        } catch (e) {
+          console.log('❌ Could not parse error body');
+        }
+      }
 
       const contentType = response.headers['content-type'] || 'application/octet-stream';
       res.setHeader('Content-Type', contentType);
@@ -1175,7 +1105,6 @@ if (isApiEndpoint) {
   } catch (error) {
     console.error('❌ GET Proxy error:', error.message);
     
-    // abortedエラーは無視
     if (error.message.includes('aborted') || error.message.includes('ERR_ABORTED')) {
       console.log('⚠️ Request aborted, returning 204');
       res.status(204).send();
@@ -1489,6 +1418,256 @@ app.get('/api/x-cookies-debug', async (req, res) => {
   }
 });
 
+app.get('/api/test-cookie-send', (req, res) => {
+  console.log('🧪 [TEST] Cookie send test endpoint called');
+  
+  const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
+  
+  if (!hasCookies) {
+    return res.status(400).json({
+      success: false,
+      error: 'No cached cookies available. Please inject cookies first at /x-cookie-helper.html'
+    });
+  }
+  
+  try {
+    console.log('🧪 [TEST] Generating Set-Cookie headers...');
+    console.log('🧪 [TEST] Cached cookie count:', cachedXCookies.length);
+    
+    // Set-Cookieヘッダーを生成
+    const setCookieHeaders = cachedXCookies
+      .filter(c => {
+        if (!c || !c.name || !c.value) {
+          console.log('🧪 [TEST] Skipping invalid cookie:', c);
+          return false;
+        }
+        return true;
+      })
+      .map(c => {
+        const parts = [
+          `${c.name}=${c.value}`,
+          `Path=/`,
+          `Max-Age=${60 * 60 * 24 * 365}`, // 1年間有効
+        ];
+        
+        // Render環境の場合はSecureを追加
+        if (process.env.RENDER) {
+          parts.push('Secure');
+        }
+        
+        // SameSite属性
+        if (c.name === 'ct0') {
+          parts.push('SameSite=Lax');
+        } else {
+          parts.push('SameSite=None');
+          // ローカル環境でもSecureが必要
+          if (!process.env.RENDER) {
+            parts.push('Secure');
+          }
+        }
+        
+        return parts.join('; ');
+      });
+    
+    if (setCookieHeaders.length === 0) {
+      throw new Error('No valid cookies to send');
+    }
+    
+    // Set-Cookieヘッダーを設定
+    res.setHeader('Set-Cookie', setCookieHeaders);
+    console.log('✅ [TEST] Set-Cookie headers added:', setCookieHeaders.length);
+    
+    // HTMLレスポンス
+    res.send(`
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cookie送信テスト</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
+      color: #fff;
+      padding: 40px 20px;
+      min-height: 100vh;
+    }
+    .container { max-width: 800px; margin: 0 auto; }
+    h1 {
+      font-size: 32px;
+      margin-bottom: 20px;
+      text-align: center;
+      background: linear-gradient(135deg, #4CAF50 0%, #8BC34A 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .card {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px;
+      padding: 30px;
+      margin-bottom: 20px;
+    }
+    .status-box {
+      padding: 20px;
+      border-radius: 8px;
+      margin: 15px 0;
+      font-size: 14px;
+      line-height: 1.8;
+    }
+    .status-ok {
+      background: rgba(76,175,80,0.1);
+      border: 2px solid #4CAF50;
+    }
+    .status-error {
+      background: rgba(244,67,54,0.1);
+      border: 2px solid #f44336;
+    }
+    button {
+      padding: 14px 24px;
+      background: #2196F3;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      margin: 10px 10px 10px 0;
+    }
+    button:hover { background: #1976D2; transform: translateY(-2px); }
+    button.success { background: #4CAF50; }
+    button.success:hover { background: #45a049; }
+    pre {
+      background: rgba(0,0,0,0.3);
+      padding: 15px;
+      border-radius: 6px;
+      overflow-x: auto;
+      font-size: 12px;
+      line-height: 1.6;
+      font-family: 'Courier New', monospace;
+    }
+    .section-title {
+      font-size: 18px;
+      color: #b0b0b0;
+      margin: 25px 0 15px 0;
+      padding-bottom: 8px;
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+    }
+    .info {
+      color: rgba(255,255,255,0.6);
+      font-size: 13px;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>✅ Cookie送信テスト成功</h1>
+    
+    <div class="card">
+      <div class="status-ok">
+        <strong>🍪 Set-Cookieヘッダーを送信しました</strong><br><br>
+        送信Cookie数: <strong>${setCookieHeaders.length}個</strong><br>
+        Cookie名: <code>${cachedXCookies.map(c => c.name).join(', ')}</code>
+      </div>
+      
+      <div class="section-title">ブラウザCookie確認</div>
+      <button onclick="checkCookies()">🔍 Cookieを確認</button>
+      <button onclick="location.href='/home'" class="success">🏠 タイムラインをテスト</button>
+      <button onclick="location.href='/cookie-diagnostic.html'">📊 診断ツールへ</button>
+      
+      <div id="result" style="margin-top: 20px; display: none;"></div>
+    </div>
+
+    <div class="card">
+      <div class="section-title">💡 次のステップ</div>
+      <ol style="line-height: 1.8; margin-left: 20px;">
+        <li>上の「Cookieを確認」ボタンをクリックして、ブラウザにCookieが保存されたか確認</li>
+        <li>10個以上のCookieが表示されればOK</li>
+        <li>「タイムラインをテスト」ボタンで /home にアクセス</li>
+        <li>ツイートが表示されれば成功！🎉</li>
+      </ol>
+      
+      <div class="info">
+        ℹ️ auth_tokenはHttpOnlyのため、document.cookieでは確認できませんが、
+        F12 → Application → Cookies で確認できます
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function checkCookies() {
+      const result = document.getElementById('result');
+      const cookies = document.cookie;
+      
+      if (!cookies) {
+        result.className = 'status-box status-error';
+        result.innerHTML = 
+          '<strong>❌ Cookieが見つかりません</strong><br><br>' +
+          'ブラウザがCookieをブロックしている可能性があります。<br>' +
+          'ブラウザの設定でCookieを有効にしてください。';
+        result.style.display = 'block';
+        return;
+      }
+      
+      const cookiePairs = cookies.split(';').map(c => c.trim());
+      const count = cookiePairs.length;
+      
+      const statusClass = count >= 10 ? 'status-ok' : 'status-error';
+      const icon = count >= 10 ? '✅' : '⚠️';
+      
+      result.className = 'status-box ' + statusClass;
+      result.innerHTML = 
+        '<strong>' + icon + ' ブラウザCookie確認結果</strong><br><br>' +
+        'ブラウザに保存されたCookie数: <strong>' + count + '個</strong><br><br>' +
+        '<pre>' + cookies + '</pre>' +
+        '<div class="info">ℹ️ auth_tokenはHttpOnlyのため表示されません（正常）</div>';
+      result.style.display = 'block';
+      
+      // F12を開いているか確認して案内
+      if (count >= 10) {
+        setTimeout(() => {
+          alert(
+            '✅ Cookie送信成功！\\n\\n' +
+            count + '個のCookieがブラウザに保存されました。\\n\\n' +
+            '次は「タイムラインをテスト」ボタンで /home にアクセスしてください！'
+          );
+        }, 500);
+      }
+    }
+    
+    // ページ読み込み時に自動実行
+    setTimeout(checkCookies, 1000);
+    
+    // F12でApplication → Cookiesの確認を促す
+    console.log('=== Cookie送信テスト ===');
+    console.log('✅ Set-Cookieヘッダーで ${setCookieHeaders.length} 個のCookieを送信しました');
+    console.log('📋 Cookie名:', '${cachedXCookies.map(c => c.name).join(', ')}');
+    console.log('');
+    console.log('💡 全てのCookieを確認するには:');
+    console.log('   F12 → Application → Cookies → https://yubikiri-proxy-pro-x.onrender.com');
+    console.log('');
+    console.log('🍪 auth_token, ct0 などのHttpOnly Cookieもここで確認できます');
+  </script>
+</body>
+</html>
+    `);
+    
+    console.log('✅ [TEST] Test page sent successfully');
+    
+  } catch (error) {
+    console.error('❌ [TEST] Error:', error.message);
+    console.error('❌ [TEST] Stack:', error.stack);
+    
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
 
 この診断エンドポイントで以下を確認してください:
 
