@@ -172,7 +172,7 @@ function rewriteHTML(html, baseUrl) {
 
   // CSP, スクリプトを簡潔に
   var cspMeta = '<meta http-equiv="Content-Security-Policy" content="connect-src * blob: data:; default-src * \'unsafe-inline\' \'unsafe-eval\' blob: data:; script-src * \'unsafe-inline\' \'unsafe-eval\' blob:;">';
- var earlyScript = `<script>
+  var earlyScript = `<script>
 (function(){
   console.log("[Proxy] Starting enhanced intercept");
   
@@ -195,19 +195,23 @@ function rewriteHTML(html, baseUrl) {
   console.log("  ct0:", getCookieValue('ct0') ? 'EXISTS' : 'MISSING');
   console.log("  Total cookies:", document.cookie.split(';').length);
   
-  // XHRインターセプト
+  // XHRインターセプト（修正版）
   var OrigXHR=window.XMLHttpRequest;
   window.XMLHttpRequest=function(){
     var xhr=new OrigXHR();
     var origOpen=xhr.open;
     var origSend=xhr.send;
     var isProxied=false;
+    var isAsync=true; // 🔴 非同期フラグ
     
     xhr.open=function(m,u,a,us,p){
+      // 🔴 非同期フラグを保存（デフォルトはtrue）
+      isAsync = (a === undefined || a === true);
+      
       if(typeof u==="string"&&(u.includes("api.x.com")||u.includes("x.com/i/")||u.includes("graphql"))){
         console.log("[Proxy] XHR Intercepted:",u.substring(0,80));
+        console.log("[Proxy] Async mode:", isAsync);
         
-        // 🔴 Cookie確認
         const hasCookies = document.cookie.length > 0;
         console.log("[Proxy] Has cookies:", hasCookies);
         
@@ -220,9 +224,13 @@ function rewriteHTML(html, baseUrl) {
     
     xhr.send=function(){
       if(isProxied){
-        // 🔴 withCredentials強制有効化
-        this.withCredentials=true;
-        console.log("[Proxy] XHR credentials enabled");
+        // 🔴 非同期の場合のみwithCredentialsを設定
+        if(isAsync){
+          this.withCredentials=true;
+          console.log("[Proxy] XHR credentials enabled");
+        } else {
+          console.log("[Proxy] Sync XHR detected, skipping credentials");
+        }
       }
       return origSend.apply(this,arguments)
     };
@@ -238,22 +246,18 @@ function rewriteHTML(html, baseUrl) {
     if(u&&(u.includes("api.x.com")||u.includes("x.com/i/")||u.includes("graphql"))){
       console.log("[Proxy] Fetch intercepted:",u.substring(0,80));
       
-      // 🔴 Cookie確認
       const hasCookies = document.cookie.length > 0;
       console.log("[Proxy] Has cookies:", hasCookies);
       
       var pu=encodeProxyUrl(u);
       var newOpts=Object.assign({},o||{});
       
-      // 🔴 credentials強制設定
       newOpts.credentials="include";
       
-      // 🔴 ヘッダー確認・追加
       if (!newOpts.headers) {
         newOpts.headers = {};
       }
       
-      // ct0トークンを明示的に追加
       const ct0 = getCookieValue('ct0');
       if (ct0 && !newOpts.headers['x-csrf-token']) {
         newOpts.headers['x-csrf-token'] = ct0;
@@ -265,7 +269,6 @@ function rewriteHTML(html, baseUrl) {
       }else{
         var clonedHeaders=new Headers(r.headers||{});
         
-        // 🔴 CSRFトークン追加
         if (ct0 && !clonedHeaders.has('x-csrf-token')) {
           clonedHeaders.set('x-csrf-token', ct0);
         }
