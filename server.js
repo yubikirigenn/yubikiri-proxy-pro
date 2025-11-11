@@ -172,7 +172,119 @@ function rewriteHTML(html, baseUrl) {
 
   // CSP, スクリプトを簡潔に
   var cspMeta = '<meta http-equiv="Content-Security-Policy" content="connect-src * blob: data:; default-src * \'unsafe-inline\' \'unsafe-eval\' blob: data:; script-src * \'unsafe-inline\' \'unsafe-eval\' blob:;">';
- var earlyScript = '<script>(function(){console.log("[Proxy] Starting intercept");var PROXY_ORIGIN="' + proxyOrigin + '";var PROXY_PATH="' + PROXY_PATH + '";function encodeProxyUrl(u){return PROXY_ORIGIN+PROXY_PATH+btoa(u).replace(/\\+/g,"-").replace(/\\//g,"_").replace(/=/g,"")}var OrigXHR=window.XMLHttpRequest;window.XMLHttpRequest=function(){var xhr=new OrigXHR();var origOpen=xhr.open;var origSend=xhr.send;var isProxied=false;xhr.open=function(m,u,a,us,p){if(typeof u==="string"&&(u.includes("api.x.com")||u.includes("x.com/i/")||u.includes("graphql"))){console.log("[Proxy] XHR Intercepted:",u.substring(0,80));var pu=encodeProxyUrl(u);isProxied=true;return origOpen.call(this,m,pu,a,us,p)}return origOpen.call(this,m,u,a,us,p)};xhr.send=function(){if(isProxied){this.withCredentials=true}return origSend.apply(this,arguments)};return xhr};var origFetch=window.fetch;window.fetch=function(r,o){var u=typeof r==="string"?r:(r.url||r);if(u&&(u.includes("api.x.com")||u.includes("x.com/i/")||u.includes("graphql"))){console.log("[Proxy] Fetch intercepted:",u.substring(0,80));var pu=encodeProxyUrl(u);var newOpts=Object.assign({},o||{});newOpts.credentials="include";if(typeof r==="string"){return origFetch(pu,newOpts)}else{var clonedHeaders=new Headers(r.headers||{});var nr=new Request(pu,{method:r.method||"GET",headers:clonedHeaders,body:r.body,credentials:"include"});return origFetch(nr,newOpts)}}return origFetch(r,o)};console.log("[Proxy] Intercept OK")})();</script>';
+ var earlyScript = `<script>
+(function(){
+  console.log("[Proxy] Starting enhanced intercept");
+  
+  var PROXY_ORIGIN="${proxyOrigin}";
+  var PROXY_PATH="${PROXY_PATH}";
+  
+  function encodeProxyUrl(u){
+    return PROXY_ORIGIN+PROXY_PATH+btoa(u).replace(/\\+/g,"-").replace(/\\//g,"_").replace(/=/g,"")
+  }
+  
+  // 🔴 Cookie確認用ヘルパー
+  function getCookieValue(name) {
+    const value = document.cookie.match('(^|;)\\\\s*' + name + '\\\\s*=\\\\s*([^;]+)');
+    return value ? value.pop() : '';
+  }
+  
+  // 🔴 Cookie診断ログ
+  console.log("[Proxy] Cookie check:");
+  console.log("  auth_token:", getCookieValue('auth_token') ? 'EXISTS' : 'MISSING');
+  console.log("  ct0:", getCookieValue('ct0') ? 'EXISTS' : 'MISSING');
+  console.log("  Total cookies:", document.cookie.split(';').length);
+  
+  // XHRインターセプト
+  var OrigXHR=window.XMLHttpRequest;
+  window.XMLHttpRequest=function(){
+    var xhr=new OrigXHR();
+    var origOpen=xhr.open;
+    var origSend=xhr.send;
+    var isProxied=false;
+    
+    xhr.open=function(m,u,a,us,p){
+      if(typeof u==="string"&&(u.includes("api.x.com")||u.includes("x.com/i/")||u.includes("graphql"))){
+        console.log("[Proxy] XHR Intercepted:",u.substring(0,80));
+        
+        // 🔴 Cookie確認
+        const hasCookies = document.cookie.length > 0;
+        console.log("[Proxy] Has cookies:", hasCookies);
+        
+        var pu=encodeProxyUrl(u);
+        isProxied=true;
+        return origOpen.call(this,m,pu,a,us,p)
+      }
+      return origOpen.call(this,m,u,a,us,p)
+    };
+    
+    xhr.send=function(){
+      if(isProxied){
+        // 🔴 withCredentials強制有効化
+        this.withCredentials=true;
+        console.log("[Proxy] XHR credentials enabled");
+      }
+      return origSend.apply(this,arguments)
+    };
+    
+    return xhr
+  };
+  
+  // Fetchインターセプト
+  var origFetch=window.fetch;
+  window.fetch=function(r,o){
+    var u=typeof r==="string"?r:(r.url||r);
+    
+    if(u&&(u.includes("api.x.com")||u.includes("x.com/i/")||u.includes("graphql"))){
+      console.log("[Proxy] Fetch intercepted:",u.substring(0,80));
+      
+      // 🔴 Cookie確認
+      const hasCookies = document.cookie.length > 0;
+      console.log("[Proxy] Has cookies:", hasCookies);
+      
+      var pu=encodeProxyUrl(u);
+      var newOpts=Object.assign({},o||{});
+      
+      // 🔴 credentials強制設定
+      newOpts.credentials="include";
+      
+      // 🔴 ヘッダー確認・追加
+      if (!newOpts.headers) {
+        newOpts.headers = {};
+      }
+      
+      // ct0トークンを明示的に追加
+      const ct0 = getCookieValue('ct0');
+      if (ct0 && !newOpts.headers['x-csrf-token']) {
+        newOpts.headers['x-csrf-token'] = ct0;
+        console.log("[Proxy] Added x-csrf-token");
+      }
+      
+      if(typeof r==="string"){
+        return origFetch(pu,newOpts)
+      }else{
+        var clonedHeaders=new Headers(r.headers||{});
+        
+        // 🔴 CSRFトークン追加
+        if (ct0 && !clonedHeaders.has('x-csrf-token')) {
+          clonedHeaders.set('x-csrf-token', ct0);
+        }
+        
+        var nr=new Request(pu,{
+          method:r.method||"GET",
+          headers:clonedHeaders,
+          body:r.body,
+          credentials:"include"
+        });
+        return origFetch(nr,newOpts)
+      }
+    }
+    return origFetch(r,o)
+  };
+  
+  console.log("[Proxy] Enhanced intercept OK");
+})();
+</script>`;
   var mainScript = '<script>document.addEventListener("visibilitychange",function(){if(!document.hidden){console.log("[Proxy] Tab visible")}},true);</script>';
 
   // <head>に注入
