@@ -1133,84 +1133,121 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
         }
       }
     } else {
-      // 非HTMLリソース（JS/CSS/画像/API）はaxiosで取得
-      console.log('📦 Fetching non-HTML resource with axios');
-      
-      const headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'Accept': '*/*',
-        'Referer': `${parsedUrl.protocol}//${parsedUrl.host}/`,
-      };
+  // 非HTMLリソース（JS/CSS/画像/API）はaxiosで取得
+  console.log('📦 Fetching non-HTML resource with axios');
+  
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'Accept': '*/*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Referer': `${parsedUrl.protocol}//${parsedUrl.host}/`,
+    'Origin': `${parsedUrl.protocol}//${parsedUrl.host}`,
+    'Connection': 'keep-alive',
+  };
 
-      if (isXDomain && hasCookies) {
-        try {
-          const cookieString = cachedXCookies
-            .filter(c => c && c.name && c.value)
-            .map(c => `${c.name}=${c.value}`)
-            .join('; ');
-          
-          if (cookieString) {
-            headers['Cookie'] = cookieString;
-            console.log('🍪 Using cached cookies for resource');
-          }
-          
-          if (isApiEndpoint) {
-            const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
-            if (ct0Cookie && ct0Cookie.value) {
-              headers['x-csrf-token'] = ct0Cookie.value;
-              console.log('🔐 Added CSRF token for API');
-            }
-            
-            headers['x-twitter-active-user'] = 'yes';
-            headers['x-twitter-client-language'] = 'en';
-            headers['x-twitter-auth-type'] = 'OAuth2Session';
-            
-            if (targetUrl.includes('SearchTimeline')) {
-              headers['Referer'] = 'https://x.com/search';
-            }
-            
-            if (targetUrl.includes('graphql')) {
-              headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
-            }
-          }
-        } catch (e) {
-          console.log('⚠️ Cookie error:', e.message);
-        }
+  if (isXDomain && hasCookies) {
+    try {
+      // 🔴 Cookie文字列の生成を改善
+      const cookieString = cachedXCookies
+        .filter(c => c && c.name && c.value)
+        .map(c => `${c.name}=${c.value}`)
+        .join('; ');
+      
+      if (cookieString) {
+        headers['Cookie'] = cookieString;
+        console.log('🍪 Using cached cookies for resource');
+        console.log('🍪 Cookie names:', cachedXCookies.map(c => c.name).join(', '));
+        console.log('🍪 Cookie string length:', cookieString.length);
       }
-
-      const response = await axios({
-        method: 'GET',
-        url: targetUrl,
-        headers: headers,
-        responseType: 'arraybuffer',
-        maxRedirects: 5,
-        validateStatus: () => true,
-        timeout: 15000
-      });
-
-      console.log(`📥 Resource loaded: ${response.status}`);
       
-      if (response.status === 400 || response.status === 404) {
-        console.log('❌ Resource Error:', response.status, 'for', targetUrl);
+      if (isApiEndpoint) {
+        const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
+        if (ct0Cookie && ct0Cookie.value) {
+          headers['x-csrf-token'] = ct0Cookie.value;
+          console.log('🔐 Added CSRF token for API');
+        } else {
+          console.log('⚠️ ct0 cookie not found for API request');
+        }
         
-        try {
-          const errorBody = response.data.toString('utf-8');
-          console.log('❌ Error body:', errorBody.substring(0, 200));
-          
-          if (errorBody.includes('"code":215') || errorBody.includes('Bad Authentication')) {
-            console.log('🚨 AUTHENTICATION ERROR - Cookies may be invalid');
-            res.setHeader('X-Proxy-Error', 'Authentication Failed');
-          }
-        } catch (e) {
-          console.log('❌ Could not parse error body');
+        // 🔴 X API用の必須ヘッダーを追加
+        headers['x-twitter-active-user'] = 'yes';
+        headers['x-twitter-client-language'] = 'en';
+        headers['x-twitter-auth-type'] = 'OAuth2Session';
+        
+        // 🔴 verify_credentials などのエンドポイント用
+        if (targetUrl.includes('verify_credentials') || 
+            targetUrl.includes('account/') || 
+            targetUrl.includes('1.1/')) {
+          console.log('🔑 Adding legacy API headers');
+        }
+        
+        if (targetUrl.includes('SearchTimeline')) {
+          headers['Referer'] = 'https://x.com/search';
+        }
+        
+        if (targetUrl.includes('graphql')) {
+          headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
+          console.log('🔑 Added GraphQL bearer token');
         }
       }
-
-      const contentType = response.headers['content-type'] || 'application/octet-stream';
-      res.setHeader('Content-Type', contentType);
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.send(response.data);
+    } catch (e) {
+      console.log('⚠️ Cookie error:', e.message);
     }
+  }
+
+  // 🔴 デバッグ用：送信するヘッダーを詳細にログ出力
+  if (isApiEndpoint) {
+    console.log('📤 API Request headers:', {
+      hasCookie: !!headers['Cookie'],
+      hasCsrf: !!headers['x-csrf-token'],
+      hasAuth: !!headers['authorization'],
+      userAgent: headers['User-Agent'].substring(0, 50) + '...',
+    });
+  }
+
+  const response = await axios({
+    method: 'GET',
+    url: targetUrl,
+    headers: headers,
+    responseType: 'arraybuffer',
+    maxRedirects: 5,
+    validateStatus: () => true,
+    timeout: 15000
+  });
+
+  console.log(`📥 Resource loaded: ${response.status}`);
+  
+  if (response.status === 400 || response.status === 404) {
+    console.log('❌ Resource Error:', response.status, 'for', targetUrl);
+    
+    try {
+      const errorBody = response.data.toString('utf-8');
+      console.log('❌ Error body:', errorBody.substring(0, 200));
+      
+      if (errorBody.includes('"code":215') || errorBody.includes('Bad Authentication')) {
+        console.log('🚨 AUTHENTICATION ERROR - Cookies may be invalid');
+        
+        // 🔴 Cookie詳細をログ出力
+        console.log('🍪 Cookie details:');
+        if (hasCookies) {
+          cachedXCookies.forEach(c => {
+            if (c && c.name) {
+              console.log(`   ${c.name}: ${c.value ? 'EXISTS' : 'MISSING'} (${c.value ? c.value.length : 0} chars)`);
+            }
+          });
+        }
+      }
+    } catch (e) {
+      console.log('❌ Could not parse error body');
+    }
+  }
+
+  const contentType = response.headers['content-type'] || 'application/octet-stream';
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.send(response.data);
+}
 
   } catch (error) {
     console.error('❌ GET Proxy error:', error.message);
