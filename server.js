@@ -174,7 +174,7 @@ function rewriteHTML(html, baseUrl) {
   var cspMeta = '<meta http-equiv="Content-Security-Policy" content="connect-src * blob: data:; default-src * \'unsafe-inline\' \'unsafe-eval\' blob: data:; script-src * \'unsafe-inline\' \'unsafe-eval\' blob:;">';
   var earlyScript = `<script>
 (function(){
-  console.log("[Proxy] Starting enhanced intercept");
+  console.log("[Proxy] Starting enhanced intercept v2");
   
   var PROXY_ORIGIN="${proxyOrigin}";
   var PROXY_PATH="${PROXY_PATH}";
@@ -183,29 +183,27 @@ function rewriteHTML(html, baseUrl) {
     return PROXY_ORIGIN+PROXY_PATH+btoa(u).replace(/\\+/g,"-").replace(/\\//g,"_").replace(/=/g,"")
   }
   
-  // 🔴 Cookie確認用ヘルパー
   function getCookieValue(name) {
     const value = document.cookie.match('(^|;)\\\\s*' + name + '\\\\s*=\\\\s*([^;]+)');
     return value ? value.pop() : '';
   }
   
-  // 🔴 Cookie診断ログ
   console.log("[Proxy] Cookie check:");
   console.log("  auth_token:", getCookieValue('auth_token') ? 'EXISTS' : 'MISSING');
   console.log("  ct0:", getCookieValue('ct0') ? 'EXISTS' : 'MISSING');
   console.log("  Total cookies:", document.cookie.split(';').length);
   
-  // XHRインターセプト（修正版）
+  // XHRインターセプト（timeout保護付き）
   var OrigXHR=window.XMLHttpRequest;
   window.XMLHttpRequest=function(){
     var xhr=new OrigXHR();
     var origOpen=xhr.open;
     var origSend=xhr.send;
     var isProxied=false;
-    var isAsync=true; // 🔴 非同期フラグ
+    var isAsync=true;
+    var internalTimeout=0;
     
     xhr.open=function(m,u,a,us,p){
-      // 🔴 非同期フラグを保存（デフォルトはtrue）
       isAsync = (a === undefined || a === true);
       
       if(typeof u==="string"&&(u.includes("api.x.com")||u.includes("x.com/i/")||u.includes("graphql"))){
@@ -222,15 +220,31 @@ function rewriteHTML(html, baseUrl) {
       return origOpen.call(this,m,u,a,us,p)
     };
     
-    xhr.send=function(){
-      if(isProxied){
-        // 🔴 非同期の場合のみwithCredentialsを設定
-        if(isAsync){
-          this.withCredentials=true;
-          console.log("[Proxy] XHR credentials enabled");
-        } else {
-          console.log("[Proxy] Sync XHR detected, skipping credentials");
+    // timeoutプロパティの保護
+    Object.defineProperty(xhr, 'timeout', {
+      get: function() {
+        return internalTimeout;
+      },
+      set: function(val) {
+        if (isProxied && !isAsync) {
+          console.log("[Proxy] Blocked timeout set on sync XHR");
+          internalTimeout = val;
+          return;
         }
+        internalTimeout = val;
+        try {
+          Object.getOwnPropertyDescriptor(OrigXHR.prototype, 'timeout').set.call(this, val);
+        } catch(e) {
+          console.log("[Proxy] Could not set timeout:", e.message);
+        }
+      },
+      configurable: true
+    });
+    
+    xhr.send=function(){
+      if(isProxied && isAsync){
+        this.withCredentials=true;
+        console.log("[Proxy] XHR credentials enabled");
       }
       return origSend.apply(this,arguments)
     };
@@ -286,6 +300,24 @@ function rewriteHTML(html, baseUrl) {
   };
   
   console.log("[Proxy] Enhanced intercept OK");
+  
+  // Service Worker無効化
+  if ('serviceWorker' in navigator) {
+    console.log("[Proxy] Blocking Service Worker registration");
+    
+    navigator.serviceWorker.getRegistrations().then(function(registrations) {
+      for(let registration of registrations) {
+        registration.unregister();
+        console.log("[Proxy] Unregistered Service Worker");
+      }
+    });
+    
+    var origRegister = navigator.serviceWorker.register;
+    navigator.serviceWorker.register = function() {
+      console.log("[Proxy] Service Worker registration blocked");
+      return Promise.reject(new Error('Service Workers disabled by proxy'));
+    };
+  }
 })();
 </script>`;
   var mainScript = '<script>document.addEventListener("visibilitychange",function(){if(!document.hidden){console.log("[Proxy] Tab visible")}},true);</script>';
