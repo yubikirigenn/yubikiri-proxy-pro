@@ -645,6 +645,108 @@ app.options(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
   res.status(204).send();
 });
 
+app.options('/i/api/*', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token, x-twitter-active-user, x-twitter-client-language, x-twitter-auth-type');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  res.status(204).send();
+});
+
+app.all('/i/api/*', async (req, res) => {
+  console.log('⚡ [FALLBACK] Fast-path X.com API');
+  console.log('⚡ [FALLBACK] Method:', req.method, 'Path:', req.path);
+  
+  try {
+    const targetUrl = `https://x.com${req.path}${req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : ''}`;
+    
+    const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
+    
+    if (!hasCookies) {
+      console.log('⚠️ [FALLBACK] No cookies available');
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    
+    const headers = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'Accept': '*/*',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Content-Type': req.headers['content-type'] || 'application/json',
+      'Origin': 'https://x.com',
+      'Referer': 'https://x.com/home',
+    };
+    
+    const cookieString = cachedXCookies
+      .filter(c => c && c.name && c.value)
+      .map(c => `${c.name}=${c.value}`)
+      .join('; ');
+    
+    if (cookieString) {
+      headers['Cookie'] = cookieString;
+    }
+    
+    const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
+    if (ct0Cookie && ct0Cookie.value) {
+      headers['x-csrf-token'] = ct0Cookie.value;
+    }
+    
+    headers['x-twitter-active-user'] = 'yes';
+    headers['x-twitter-client-language'] = 'ja';
+    headers['x-twitter-auth-type'] = 'OAuth2Session';
+    
+    if (targetUrl.includes('graphql')) {
+      headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
+    }
+    
+    const axiosConfig = {
+      method: req.method,
+      url: targetUrl,
+      headers: headers,
+      responseType: 'arraybuffer',
+      maxRedirects: 5,
+      validateStatus: () => true,
+      timeout: 15000
+    };
+    
+    if (req.method === 'POST' || req.method === 'PUT') {
+      axiosConfig.data = req.body;
+    }
+    
+    const response = await axios(axiosConfig);
+    
+    if (response.status === 404) {
+      console.log(`⚠️ [FALLBACK] 404: ${req.path}`);
+    } else if (response.status >= 400) {
+      console.log(`⚠️ [FALLBACK] Error ${response.status}: ${req.path}`);
+    } else {
+      console.log(`✅ [FALLBACK] ${response.status}: ${req.path}`);
+    }
+    
+    const contentType = response.headers['content-type'] || 'application/json';
+    
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    
+    res.status(response.status).send(response.data);
+    
+  } catch (error) {
+    if (error.code === 'ECONNABORTED') {
+      console.log(`⏱️ [FALLBACK] Timeout: ${req.path}`);
+      return res.status(504).json({ error: 'Request timeout' });
+    }
+    
+    console.error('❌ [FALLBACK] Error:', error.message);
+    res.status(500).json({
+      error: 'Fallback proxy failed',
+      message: error.message
+    });
+  }
+});
+
 // 🔴 SearchTimeline検出専用ミドルウェア
 app.use(`${PROXY_PATH}:encodedUrl*`, async (req, res, next) => {
   if (req.method !== 'GET') {
@@ -2209,100 +2311,6 @@ app.get('/messages', (req, res) => {
 });
 
 // server.js の既存のルート定義の後、404ハンドラーの前に追加
-
-// ===== 🔴 CRITICAL: X.com APIフォールバックルート =====
-// プロキシパスなしで直接来たX.com APIリクエストを処理
-
-app.all('/i/api/*', async (req, res) => {
-  console.log('🔄 [FALLBACK] X.com API request without proxy path');
-  console.log('🔄 [FALLBACK] Method:', req.method);
-  console.log('🔄 [FALLBACK] Path:', req.path);
-  
-  try {
-    const targetUrl = `https://x.com${req.path}${req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : ''}`;
-    console.log('🔄 [FALLBACK] Redirecting to:', targetUrl);
-    
-    const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
-    
-    const headers = {
-      'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      'Accept': req.headers['accept'] || '*/*',
-      'Accept-Language': req.headers['accept-language'] || 'en-US,en;q=0.9',
-      'Content-Type': req.headers['content-type'] || 'application/json',
-    };
-    
-    headers['Origin'] = 'https://x.com';
-    headers['Referer'] = 'https://x.com/home';
-    
-    // Cookieを追加
-    if (hasCookies) {
-      const cookieString = cachedXCookies
-        .filter(c => c && c.name && c.value)
-        .map(c => `${c.name}=${c.value}`)
-        .join('; ');
-      
-      if (cookieString) {
-        headers['Cookie'] = cookieString;
-        console.log('🍪 [FALLBACK] Using cached cookies');
-      }
-      
-      // CSRF トークン
-      const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
-      if (ct0Cookie && ct0Cookie.value) {
-        headers['x-csrf-token'] = ct0Cookie.value;
-        console.log('🔐 [FALLBACK] Added CSRF token');
-      }
-    }
-    
-    // X API用ヘッダー
-    headers['x-twitter-active-user'] = 'yes';
-    headers['x-twitter-client-language'] = 'ja';
-    headers['x-twitter-auth-type'] = 'OAuth2Session';
-    
-    // GraphQL用のベアラートークン
-    if (targetUrl.includes('graphql')) {
-      headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
-      console.log('🔑 [FALLBACK] Added GraphQL bearer token');
-    }
-    
-    const axiosConfig = {
-      method: req.method,
-      url: targetUrl,
-      headers: headers,
-      responseType: 'arraybuffer',
-      maxRedirects: 5,
-      validateStatus: () => true,
-      timeout: 30000
-    };
-    
-    // POSTの場合はボディを含める
-    if (req.method === 'POST' || req.method === 'PUT') {
-      axiosConfig.data = req.body;
-    }
-    
-    const response = await axios(axiosConfig);
-    
-    console.log(`✅ [FALLBACK] Response: ${response.status}`);
-    
-    const contentType = response.headers['content-type'] || 'application/json';
-    
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token');
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-    
-    res.status(response.status).send(response.data);
-    
-  } catch (error) {
-    console.error('❌ [FALLBACK] Error:', error.message);
-    res.status(500).json({
-      error: 'Fallback proxy failed',
-      message: error.message,
-      path: req.path
-    });
-  }
-});
 
 // 他のX.comパス用のフォールバック
 app.all('/1.1/*', async (req, res) => {
