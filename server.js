@@ -172,9 +172,11 @@ function rewriteHTML(html, baseUrl) {
 
   // CSP, スクリプトを簡潔に
   var cspMeta = '<meta http-equiv="Content-Security-Policy" content="connect-src * blob: data:; default-src * \'unsafe-inline\' \'unsafe-eval\' blob: data:; script-src * \'unsafe-inline\' \'unsafe-eval\' blob:;">';
-  var earlyScript = `<script>
+  // server.js の rewriteHTML 関数内の earlyScript を以下に置き換え
+
+var earlyScript = `<script>
 (function(){
-  console.log("[Proxy] Starting enhanced intercept v3");
+  console.log("[Proxy] Starting enhanced intercept");
   
   var PROXY_ORIGIN="${proxyOrigin}";
   var PROXY_PATH="${PROXY_PATH}";
@@ -183,11 +185,13 @@ function rewriteHTML(html, baseUrl) {
     return PROXY_ORIGIN+PROXY_PATH+btoa(u).replace(/\\+/g,"-").replace(/\\//g,"_").replace(/=/g,"")
   }
   
+  // 🔴 Cookie確認用ヘルパー
   function getCookieValue(name) {
     const value = document.cookie.match('(^|;)\\\\s*' + name + '\\\\s*=\\\\s*([^;]+)');
     return value ? value.pop() : '';
   }
   
+  // 🔴 Cookie診断ログ
   console.log("[Proxy] Cookie check:");
   console.log("  auth_token:", getCookieValue('auth_token') ? 'EXISTS' : 'MISSING');
   console.log("  ct0:", getCookieValue('ct0') ? 'EXISTS' : 'MISSING');
@@ -201,18 +205,12 @@ function rewriteHTML(html, baseUrl) {
     var origSend=xhr.send;
     var isProxied=false;
     var isAsync=true;
-    var internalTimeout=0;
+    var internalTimeout=0; // 🔴 内部タイムアウト保持
     
     xhr.open=function(m,u,a,us,p){
       isAsync = (a === undefined || a === true);
       
-      // プロキシ対象判定（既にプロキシ経由のURLは除外）
-      var shouldProxy = typeof u==="string" && 
-                       (u.includes("api.x.com")||u.includes("x.com/i/")||u.includes("graphql")) &&
-                       !u.includes(PROXY_ORIGIN) &&
-                       !u.includes("/proxy/");
-      
-      if(shouldProxy){
+      if(typeof u==="string"&&(u.includes("api.x.com")||u.includes("x.com/i/")||u.includes("graphql"))){
         console.log("[Proxy] XHR Intercepted:",u.substring(0,80));
         console.log("[Proxy] Async mode:", isAsync);
         
@@ -226,7 +224,7 @@ function rewriteHTML(html, baseUrl) {
       return origOpen.call(this,m,u,a,us,p)
     };
     
-    // timeoutプロパティの保護
+    // 🔴 timeoutプロパティの保護
     Object.defineProperty(xhr, 'timeout', {
       get: function() {
         return internalTimeout;
@@ -234,10 +232,11 @@ function rewriteHTML(html, baseUrl) {
       set: function(val) {
         if (isProxied && !isAsync) {
           console.log("[Proxy] Blocked timeout set on sync XHR");
-          internalTimeout = val;
+          internalTimeout = val; // 値は保持するが実際には設定しない
           return;
         }
         internalTimeout = val;
+        // 非同期またはプロキシ対象外の場合のみ実際に設定
         try {
           Object.getOwnPropertyDescriptor(OrigXHR.prototype, 'timeout').set.call(this, val);
         } catch(e) {
@@ -263,27 +262,25 @@ function rewriteHTML(html, baseUrl) {
   window.fetch=function(r,o){
     var u=typeof r==="string"?r:(r.url||r);
     
-    // プロキシ対象判定（既にプロキシ経由のURLは除外）
-    var shouldProxy = u && 
-                     (u.includes("api.x.com")||u.includes("x.com/i/")||u.includes("graphql")) &&
-                     !u.includes(PROXY_ORIGIN) &&
-                     !u.includes("/proxy/");
-    
-    if(shouldProxy){
+    if(u&&(u.includes("api.x.com")||u.includes("x.com/i/")||u.includes("graphql"))){
       console.log("[Proxy] Fetch intercepted:",u.substring(0,80));
       
+      // 🔴 Cookie確認
       const hasCookies = document.cookie.length > 0;
       console.log("[Proxy] Has cookies:", hasCookies);
       
       var pu=encodeProxyUrl(u);
       var newOpts=Object.assign({},o||{});
       
+      // 🔴 credentials強制設定
       newOpts.credentials="include";
       
+      // 🔴 ヘッダー確認・追加
       if (!newOpts.headers) {
         newOpts.headers = {};
       }
       
+      // ct0トークンを明示的に追加
       const ct0 = getCookieValue('ct0');
       if (ct0 && !newOpts.headers['x-csrf-token']) {
         newOpts.headers['x-csrf-token'] = ct0;
@@ -295,6 +292,7 @@ function rewriteHTML(html, baseUrl) {
       }else{
         var clonedHeaders=new Headers(r.headers||{});
         
+        // 🔴 CSRFトークン追加
         if (ct0 && !clonedHeaders.has('x-csrf-token')) {
           clonedHeaders.set('x-csrf-token', ct0);
         }
@@ -313,10 +311,11 @@ function rewriteHTML(html, baseUrl) {
   
   console.log("[Proxy] Enhanced intercept OK");
   
-  // Service Worker無効化
+  // 🔴 Service Worker無効化
   if ('serviceWorker' in navigator) {
     console.log("[Proxy] Blocking Service Worker registration");
     
+    // 既存のService Workerを削除
     navigator.serviceWorker.getRegistrations().then(function(registrations) {
       for(let registration of registrations) {
         registration.unregister();
@@ -324,6 +323,7 @@ function rewriteHTML(html, baseUrl) {
       }
     });
     
+    // 新規登録をブロック
     var origRegister = navigator.serviceWorker.register;
     navigator.serviceWorker.register = function() {
       console.log("[Proxy] Service Worker registration blocked");
@@ -2206,6 +2206,111 @@ app.get('/messages', (req, res) => {
   const targetUrl = 'https://x.com/messages';
   const encodedUrl = encodeProxyUrl(targetUrl);
   res.redirect(302, `${PROXY_PATH}${encodedUrl}`);
+});
+
+// server.js の既存のルート定義の後、404ハンドラーの前に追加
+
+// ===== 🔴 CRITICAL: X.com APIフォールバックルート =====
+// プロキシパスなしで直接来たX.com APIリクエストを処理
+
+app.all('/i/api/*', async (req, res) => {
+  console.log('🔄 [FALLBACK] X.com API request without proxy path');
+  console.log('🔄 [FALLBACK] Method:', req.method);
+  console.log('🔄 [FALLBACK] Path:', req.path);
+  
+  try {
+    const targetUrl = `https://x.com${req.path}${req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : ''}`;
+    console.log('🔄 [FALLBACK] Redirecting to:', targetUrl);
+    
+    const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
+    
+    const headers = {
+      'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Accept': req.headers['accept'] || '*/*',
+      'Accept-Language': req.headers['accept-language'] || 'en-US,en;q=0.9',
+      'Content-Type': req.headers['content-type'] || 'application/json',
+    };
+    
+    headers['Origin'] = 'https://x.com';
+    headers['Referer'] = 'https://x.com/home';
+    
+    // Cookieを追加
+    if (hasCookies) {
+      const cookieString = cachedXCookies
+        .filter(c => c && c.name && c.value)
+        .map(c => `${c.name}=${c.value}`)
+        .join('; ');
+      
+      if (cookieString) {
+        headers['Cookie'] = cookieString;
+        console.log('🍪 [FALLBACK] Using cached cookies');
+      }
+      
+      // CSRF トークン
+      const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
+      if (ct0Cookie && ct0Cookie.value) {
+        headers['x-csrf-token'] = ct0Cookie.value;
+        console.log('🔐 [FALLBACK] Added CSRF token');
+      }
+    }
+    
+    // X API用ヘッダー
+    headers['x-twitter-active-user'] = 'yes';
+    headers['x-twitter-client-language'] = 'ja';
+    headers['x-twitter-auth-type'] = 'OAuth2Session';
+    
+    // GraphQL用のベアラートークン
+    if (targetUrl.includes('graphql')) {
+      headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
+      console.log('🔑 [FALLBACK] Added GraphQL bearer token');
+    }
+    
+    const axiosConfig = {
+      method: req.method,
+      url: targetUrl,
+      headers: headers,
+      responseType: 'arraybuffer',
+      maxRedirects: 5,
+      validateStatus: () => true,
+      timeout: 30000
+    };
+    
+    // POSTの場合はボディを含める
+    if (req.method === 'POST' || req.method === 'PUT') {
+      axiosConfig.data = req.body;
+    }
+    
+    const response = await axios(axiosConfig);
+    
+    console.log(`✅ [FALLBACK] Response: ${response.status}`);
+    
+    const contentType = response.headers['content-type'] || 'application/json';
+    
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    
+    res.status(response.status).send(response.data);
+    
+  } catch (error) {
+    console.error('❌ [FALLBACK] Error:', error.message);
+    res.status(500).json({
+      error: 'Fallback proxy failed',
+      message: error.message,
+      path: req.path
+    });
+  }
+});
+
+// 他のX.comパス用のフォールバック
+app.all('/1.1/*', async (req, res) => {
+  console.log('🔄 [FALLBACK] Legacy API request');
+  const targetUrl = `https://api.x.com${req.path}${req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : ''}`;
+  
+  // 上記と同じ処理を実行（簡略化のため省略可能）
+  res.redirect(307, `/proxy/${encodeProxyUrl(targetUrl)}`);
 });
 
 // 動画ファイルの直接アクセスをプロキシ経由に
