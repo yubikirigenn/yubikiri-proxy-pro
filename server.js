@@ -176,7 +176,7 @@ function rewriteHTML(html, baseUrl) {
 
 var earlyScript = `<script>
 (function(){
-  console.log("[Proxy] Starting enhanced intercept");
+  console.log("[Proxy] Starting enhanced intercept v4");
   
   var PROXY_ORIGIN="${proxyOrigin}";
   var PROXY_PATH="${PROXY_PATH}";
@@ -185,13 +185,11 @@ var earlyScript = `<script>
     return PROXY_ORIGIN+PROXY_PATH+btoa(u).replace(/\\+/g,"-").replace(/\\//g,"_").replace(/=/g,"")
   }
   
-  // 🔴 Cookie確認用ヘルパー
   function getCookieValue(name) {
     const value = document.cookie.match('(^|;)\\\\s*' + name + '\\\\s*=\\\\s*([^;]+)');
     return value ? value.pop() : '';
   }
   
-  // 🔴 Cookie診断ログ
   console.log("[Proxy] Cookie check:");
   console.log("  auth_token:", getCookieValue('auth_token') ? 'EXISTS' : 'MISSING');
   console.log("  ct0:", getCookieValue('ct0') ? 'EXISTS' : 'MISSING');
@@ -205,43 +203,61 @@ var earlyScript = `<script>
     var origSend=xhr.send;
     var isProxied=false;
     var isAsync=true;
-    var internalTimeout=0; // 🔴 内部タイムアウト保持
+    var internalTimeout=0;
     
     xhr.open=function(m,u,a,us,p){
       isAsync = (a === undefined || a === true);
       
-      if(typeof u==="string"&&(u.includes("api.x.com")||u.includes("x.com/i/")||u.includes("graphql"))){
-        console.log("[Proxy] XHR Intercepted:",u.substring(0,80));
+      // プロキシ対象判定（相対パス対応）
+      var shouldProxy = false;
+      var finalUrl = u;
+      
+      if (typeof u === "string") {
+        var isFullXComUrl = u.startsWith("https://api.x.com") || 
+                           u.startsWith("https://x.com/i/") || 
+                           (u.startsWith("https://x.com") && u.includes("graphql"));
+        
+        var isRelativeApiPath = u.startsWith("/i/api/") || u.startsWith("/1.1/");
+        
+        var isNotProxied = !u.includes(PROXY_ORIGIN) && !u.includes("/proxy/");
+        
+        shouldProxy = (isFullXComUrl || isRelativeApiPath) && isNotProxied;
+        
+        if (shouldProxy && isRelativeApiPath) {
+          finalUrl = "https://x.com" + u;
+          console.log("[Proxy] XHR relative->absolute:", u, "=>", finalUrl.substring(0,60));
+        }
+      }
+      
+      if(shouldProxy){
+        console.log("[Proxy] XHR Intercepted:",finalUrl.substring(0,80));
         console.log("[Proxy] Async mode:", isAsync);
         
         const hasCookies = document.cookie.length > 0;
         console.log("[Proxy] Has cookies:", hasCookies);
         
-        var pu=encodeProxyUrl(u);
+        var pu=encodeProxyUrl(finalUrl);
         isProxied=true;
         return origOpen.call(this,m,pu,a,us,p)
       }
       return origOpen.call(this,m,u,a,us,p)
     };
     
-    // 🔴 timeoutプロパティの保護
+    // timeoutプロパティの保護
     Object.defineProperty(xhr, 'timeout', {
       get: function() {
         return internalTimeout;
       },
       set: function(val) {
-        if (isProxied && !isAsync) {
-          console.log("[Proxy] Blocked timeout set on sync XHR");
-          internalTimeout = val; // 値は保持するが実際には設定しない
+        internalTimeout = val;
+        if (!isAsync) {
           return;
         }
-        internalTimeout = val;
-        // 非同期またはプロキシ対象外の場合のみ実際に設定
         try {
-          Object.getOwnPropertyDescriptor(OrigXHR.prototype, 'timeout').set.call(this, val);
-        } catch(e) {
-          console.log("[Proxy] Could not set timeout:", e.message);
-        }
+          if (!isProxied) {
+            Object.getOwnPropertyDescriptor(OrigXHR.prototype, 'timeout').set.call(this, val);
+          }
+        } catch(e) {}
       },
       configurable: true
     });
@@ -262,25 +278,44 @@ var earlyScript = `<script>
   window.fetch=function(r,o){
     var u=typeof r==="string"?r:(r.url||r);
     
-    if(u&&(u.includes("api.x.com")||u.includes("x.com/i/")||u.includes("graphql"))){
-      console.log("[Proxy] Fetch intercepted:",u.substring(0,80));
+    // プロキシ対象判定（相対パス対応）
+    var shouldProxy = false;
+    var finalUrl = u;
+    
+    if (u) {
+      var isFullXComUrl = typeof u === "string" && 
+                         (u.startsWith("https://api.x.com") || 
+                          u.startsWith("https://x.com/i/") || 
+                          (u.startsWith("https://x.com") && u.includes("graphql")));
       
-      // 🔴 Cookie確認
+      var isRelativeApiPath = typeof u === "string" && 
+                             (u.startsWith("/i/api/") || u.startsWith("/1.1/"));
+      
+      var isNotProxied = !u.includes(PROXY_ORIGIN) && !u.includes("/proxy/");
+      
+      shouldProxy = (isFullXComUrl || isRelativeApiPath) && isNotProxied;
+      
+      if (shouldProxy && isRelativeApiPath) {
+        finalUrl = "https://x.com" + u;
+        console.log("[Proxy] Fetch relative->absolute:", u, "=>", finalUrl.substring(0,60));
+      }
+    }
+    
+    if(shouldProxy){
+      console.log("[Proxy] Fetch intercepted:",finalUrl.substring(0,80));
+      
       const hasCookies = document.cookie.length > 0;
       console.log("[Proxy] Has cookies:", hasCookies);
       
-      var pu=encodeProxyUrl(u);
+      var pu=encodeProxyUrl(finalUrl);
       var newOpts=Object.assign({},o||{});
       
-      // 🔴 credentials強制設定
       newOpts.credentials="include";
       
-      // 🔴 ヘッダー確認・追加
       if (!newOpts.headers) {
         newOpts.headers = {};
       }
       
-      // ct0トークンを明示的に追加
       const ct0 = getCookieValue('ct0');
       if (ct0 && !newOpts.headers['x-csrf-token']) {
         newOpts.headers['x-csrf-token'] = ct0;
@@ -292,7 +327,6 @@ var earlyScript = `<script>
       }else{
         var clonedHeaders=new Headers(r.headers||{});
         
-        // 🔴 CSRFトークン追加
         if (ct0 && !clonedHeaders.has('x-csrf-token')) {
           clonedHeaders.set('x-csrf-token', ct0);
         }
@@ -311,11 +345,10 @@ var earlyScript = `<script>
   
   console.log("[Proxy] Enhanced intercept OK");
   
-  // 🔴 Service Worker無効化
+  // Service Worker無効化
   if ('serviceWorker' in navigator) {
     console.log("[Proxy] Blocking Service Worker registration");
     
-    // 既存のService Workerを削除
     navigator.serviceWorker.getRegistrations().then(function(registrations) {
       for(let registration of registrations) {
         registration.unregister();
@@ -323,7 +356,6 @@ var earlyScript = `<script>
       }
     });
     
-    // 新規登録をブロック
     var origRegister = navigator.serviceWorker.register;
     navigator.serviceWorker.register = function() {
       console.log("[Proxy] Service Worker registration blocked");
