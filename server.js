@@ -174,7 +174,7 @@ function rewriteHTML(html, baseUrl) {
   var cspMeta = '<meta http-equiv="Content-Security-Policy" content="connect-src * blob: data:; default-src * \'unsafe-inline\' \'unsafe-eval\' blob: data:; script-src * \'unsafe-inline\' \'unsafe-eval\' blob:;">';
   var earlyScript = `<script>
 (function(){
-  console.log("[Proxy] Starting enhanced intercept v2");
+  console.log("[Proxy] Starting enhanced intercept v3");
   
   var PROXY_ORIGIN="${proxyOrigin}";
   var PROXY_PATH="${PROXY_PATH}";
@@ -193,7 +193,7 @@ function rewriteHTML(html, baseUrl) {
   console.log("  ct0:", getCookieValue('ct0') ? 'EXISTS' : 'MISSING');
   console.log("  Total cookies:", document.cookie.split(';').length);
   
-  // XHRインターセプト（timeout保護付き）
+  // XHRインターセプト
   var OrigXHR=window.XMLHttpRequest;
   window.XMLHttpRequest=function(){
     var xhr=new OrigXHR();
@@ -206,7 +206,13 @@ function rewriteHTML(html, baseUrl) {
     xhr.open=function(m,u,a,us,p){
       isAsync = (a === undefined || a === true);
       
-      if(typeof u==="string"&&(u.includes("api.x.com")||u.includes("x.com/i/")||u.includes("graphql"))){
+      // プロキシ対象判定（既にプロキシ経由のURLは除外）
+      var shouldProxy = typeof u==="string" && 
+                       (u.includes("api.x.com")||u.includes("x.com/i/")||u.includes("graphql")) &&
+                       !u.includes(PROXY_ORIGIN) &&
+                       !u.includes("/proxy/");
+      
+      if(shouldProxy){
         console.log("[Proxy] XHR Intercepted:",u.substring(0,80));
         console.log("[Proxy] Async mode:", isAsync);
         
@@ -257,7 +263,13 @@ function rewriteHTML(html, baseUrl) {
   window.fetch=function(r,o){
     var u=typeof r==="string"?r:(r.url||r);
     
-    if(u&&(u.includes("api.x.com")||u.includes("x.com/i/")||u.includes("graphql"))){
+    // プロキシ対象判定（既にプロキシ経由のURLは除外）
+    var shouldProxy = u && 
+                     (u.includes("api.x.com")||u.includes("x.com/i/")||u.includes("graphql")) &&
+                     !u.includes(PROXY_ORIGIN) &&
+                     !u.includes("/proxy/");
+    
+    if(shouldProxy){
       console.log("[Proxy] Fetch intercepted:",u.substring(0,80));
       
       const hasCookies = document.cookie.length > 0;
