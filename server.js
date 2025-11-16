@@ -1232,19 +1232,32 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
 app.post(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
   try {
     const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
-    const targetUrl = decodeProxyUrl(encodedUrl);
     
-    // プロキシドメインへのリクエストをチェック
+    // 🔴 デコード処理（エラーハンドリング付き）
+    let targetUrl;
+    try {
+      targetUrl = decodeProxyUrl(encodedUrl);
+    } catch (decodeError) {
+      console.error('❌ [POST] Decode error:', decodeError.message);
+      console.error('❌ [POST] Encoded URL:', encodedUrl.substring(0, 100));
+      return res.status(400).json({ 
+        error: 'Invalid encoded URL',
+        encodedUrl: encodedUrl.substring(0, 50) + '...'
+      });
+    }
+    
+    console.log('📡 POST Proxying:', targetUrl);
+    
+    // 🔴 二重プロキシチェック
     if (targetUrl.includes('yubikiri-proxy-pro-x.onrender.com')) {
-      console.log('⚠️ [POST] Rejected self-proxy request:', targetUrl);
+      console.log('⚠️ [POST] Rejected self-proxy:', targetUrl);
       return res.status(400).json({ 
         error: 'Self-proxy not allowed',
-        message: 'This request should use the fallback route'
+        hint: 'This should use /i/api/* fallback route'
       });
     }
 
-    console.log('📡 POST Proxying:', targetUrl);
-
+    // ✅ ここから既存のコードを続ける（encodedUrlとtargetUrlの再定義は削除）
     const parsedUrl = new url.URL(targetUrl);
     const isXDomain = parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com');
     
@@ -1275,7 +1288,6 @@ app.post(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
             console.log('🍪 Cookie count:', cachedXCookies.length);
           }
           
-          // CSRF トークン（ct0）を x-csrf-token ヘッダーに追加
           const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
           if (ct0Cookie && ct0Cookie.value) {
             headers['x-csrf-token'] = ct0Cookie.value;
@@ -1284,7 +1296,6 @@ app.post(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
             console.log('⚠️ ct0 cookie not found!');
           }
           
-          // auth_tokenの確認
           const authToken = cachedXCookies.find(c => c && c.name === 'auth_token');
           if (authToken && authToken.value) {
             console.log('✅ auth_token found');
@@ -1299,12 +1310,10 @@ app.post(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
         console.log('❌ No cached cookies available!');
       }
       
-      // X API用の追加ヘッダー
       headers['x-twitter-active-user'] = 'yes';
       headers['x-twitter-client-language'] = 'en';
       headers['x-twitter-auth-type'] = 'OAuth2Session';
       
-      // GraphQL API用のヘッダー
       if (targetUrl.includes('graphql') || targetUrl.includes('UserByScreenName')) {
         headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
         console.log('🔑 Added GraphQL authorization bearer token');
