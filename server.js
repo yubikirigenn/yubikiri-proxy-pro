@@ -654,9 +654,9 @@ app.options('/i/api/*', (req, res) => {
   res.status(204).send();
 });
 
+// 2️⃣ X.com API FALLBACK (最優先)
 app.all('/i/api/*', async (req, res) => {
-  console.log('⚡ [FALLBACK] Fast-path X.com API');
-  console.log('⚡ [FALLBACK] Method:', req.method, 'Path:', req.path);
+  console.log('⚡ [FALLBACK] X.com API');
   
   try {
     const targetUrl = `https://x.com${req.path}${req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : ''}`;
@@ -664,7 +664,6 @@ app.all('/i/api/*', async (req, res) => {
     const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
     
     if (!hasCookies) {
-      console.log('⚠️ [FALLBACK] No cookies available');
       return res.status(401).json({ error: 'Authentication required' });
     }
     
@@ -715,39 +714,30 @@ app.all('/i/api/*', async (req, res) => {
     
     const response = await axios(axiosConfig);
     
-    if (response.status === 404) {
-      console.log(`⚠️ [FALLBACK] 404: ${req.path}`);
-    } else if (response.status >= 400) {
-      console.log(`⚠️ [FALLBACK] Error ${response.status}: ${req.path}`);
-    } else {
-      console.log(`✅ [FALLBACK] ${response.status}: ${req.path}`);
+    // 404エラーは静かにログ出力（user_flow.jsonなどは無視）
+    if (response.status !== 200 && response.status !== 201) {
+      console.log(`⚠️ [FALLBACK] ${response.status}: ${req.path}`);
     }
     
     const contentType = response.headers['content-type'] || 'application/json';
     
     res.setHeader('Content-Type', contentType);
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token');
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     
-    res.status(response.status).send(response.data);
+    return res.status(response.status).send(response.data);
     
   } catch (error) {
     if (error.code === 'ECONNABORTED') {
-      console.log(`⏱️ [FALLBACK] Timeout: ${req.path}`);
       return res.status(504).json({ error: 'Request timeout' });
     }
     
     console.error('❌ [FALLBACK] Error:', error.message);
-    res.status(500).json({
-      error: 'Fallback proxy failed',
-      message: error.message
-    });
+    return res.status(500).json({ error: 'Fallback proxy failed' });
   }
 });
 
-// 🔴 SearchTimeline検出専用ミドルウェア
+// 3️⃣ SearchTimeline 特別ハンドラー
 app.use(`${PROXY_PATH}:encodedUrl*`, async (req, res, next) => {
   if (req.method !== 'GET') {
     return next();
@@ -763,8 +753,7 @@ app.use(`${PROXY_PATH}:encodedUrl*`, async (req, res, next) => {
       return next();
     }
     
-    console.log('🔍 [SEARCH] ✅ Detected SearchTimeline API request');
-    console.log('🔍 [SEARCH] Using DEDICATED search page (independent from xLoginPage)');
+    console.log('🔍 [SEARCH] SearchTimeline API detected');
     
     const urlObj = new URL(targetUrl);
     const variables = urlObj.searchParams.get('variables');
@@ -777,7 +766,6 @@ app.use(`${PROXY_PATH}:encodedUrl*`, async (req, res, next) => {
     try {
       const varsObj = JSON.parse(variables);
       searchQuery = varsObj.rawQuery;
-      console.log('🔍 [SEARCH] Query:', searchQuery);
     } catch (e) {
       return res.status(400).json({ error: 'Invalid variables format' });
     }
@@ -790,114 +778,32 @@ app.use(`${PROXY_PATH}:encodedUrl*`, async (req, res, next) => {
     
     if (!hasCookies) {
       return res.status(503).json({
-        error: 'Search requires authentication. Please inject cookies first.',
+        error: 'Search requires authentication',
         hasCookies: false
       });
     }
     
-    // 🔴 検索ページがビジー状態かチェック
     if (searchPageBusy) {
-      console.log('⚠️ [SEARCH] Search page is busy, returning error');
       return res.status(503).send(`
         <!DOCTYPE html>
-        <html>
-        <head>
-          <meta charset="UTF-8">
-          <title>検索中...</title>
-          <style>
-            body { 
-              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-              background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
-              color: #fff;
-              display: flex;
-              align-items: center;
-              justify-content: center;
-              height: 100vh;
-              margin: 0;
-            }
-            .box {
-              background: rgba(255,255,255,0.05);
-              border: 1px solid rgba(255,255,255,0.1);
-              border-radius: 8px;
-              padding: 40px;
-              max-width: 500px;
-              text-align: center;
-            }
-            h1 { color: #ffa726; margin-bottom: 20px; }
-            p { color: rgba(255,255,255,0.7); line-height: 1.6; }
-            a {
-              display: inline-block;
-              margin-top: 20px;
-              padding: 12px 24px;
-              background: #b0b0b0;
-              color: #1a1a1a;
-              text-decoration: none;
-              border-radius: 6px;
-              font-weight: 600;
-            }
-          </style>
-        </head>
-        <body>
-          <div class="box">
-            <h1>🔍 別の検索が実行中です</h1>
-            <p>別の検索リクエストを処理中です。</p>
-            <p>数秒待ってから再度お試しください。</p>
-            <a href="javascript:history.back()">戻る</a>
-          </div>
-        </body>
-        </html>
+        <html><body><h1>🔍 検索中...</h1><p>別の検索を処理中です。数秒後に再試行してください。</p></body></html>
       `);
     }
     
     searchPageBusy = true;
     
     try {
-      console.log('🔍 [SEARCH] Starting search with dedicated page...');
-      
       const page = await getOrCreateSearchPage();
       const searchUrl = `https://x.com/search?q=${encodeURIComponent(searchQuery)}&src=typed_query`;
-      console.log('🔍 [SEARCH] URL:', searchUrl);
       
-      // ナビゲーション
-      try {
-        const navPromise = page.goto(searchUrl, {
-          waitUntil: 'domcontentloaded',
-          timeout: 15000
-        });
-        
-        const timeoutPromise = new Promise((resolve) => {
-          setTimeout(() => {
-            console.log('⚠️ [SEARCH] 10s passed, getting content...');
-            resolve('timeout');
-          }, 10000);
-        });
-        
-        await Promise.race([navPromise, timeoutPromise]);
-      } catch (navError) {
-        console.log('⚠️ [SEARCH] Nav error:', navError.message);
-      }
+      await page.goto(searchUrl, {
+        waitUntil: 'domcontentloaded',
+        timeout: 15000
+      }).catch(() => {});
       
       await new Promise(resolve => setTimeout(resolve, 2000));
       
-      // コンテンツ取得
-      let html = null;
-      for (let i = 0; i < 2; i++) {
-        try {
-          console.log(`🔍 [SEARCH] Getting content (attempt ${i + 1}/2)...`);
-          html = await page.content();
-          
-          if (html && html.length > 5000) {
-            console.log(`✅ [SEARCH] Got HTML (${html.length} bytes)`);
-            break;
-          }
-          
-          if (i < 1) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
-          }
-        } catch (e) {
-          console.log(`❌ [SEARCH] Attempt ${i + 1} failed:`, e.message);
-        }
-      }
+      const html = await page.content();
       
       if (!html || html.length < 5000) {
         throw new Error('Failed to get valid search page content');
@@ -906,71 +812,13 @@ app.use(`${PROXY_PATH}:encodedUrl*`, async (req, res, next) => {
       const rewrittenHTML = rewriteHTML(html, targetUrl);
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.setHeader('Access-Control-Allow-Origin', '*');
-      res.send(rewrittenHTML);
-      
-      console.log('✅ [SEARCH] Response sent successfully');
+      return res.send(rewrittenHTML);
       
     } catch (searchError) {
       console.error('❌ [SEARCH] Error:', searchError.message);
-      
-      res.status(500).send(`
+      return res.status(500).send(`
         <!DOCTYPE html>
-        <html>
-        <head>
-          <meta charset="UTF-8">
-          <title>検索エラー</title>
-          <style>
-            body { 
-              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-              background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
-              color: #fff;
-              display: flex;
-              align-items: center;
-              justify-content: center;
-              height: 100vh;
-              margin: 0;
-            }
-            .error-box {
-              background: rgba(255,255,255,0.05);
-              border: 1px solid rgba(255,255,255,0.1);
-              border-radius: 8px;
-              padding: 40px;
-              max-width: 500px;
-              text-align: center;
-            }
-            h1 { color: #ff6b6b; margin-bottom: 20px; }
-            p { color: rgba(255,255,255,0.7); line-height: 1.6; margin-bottom: 15px; }
-            code { 
-              background: rgba(0,0,0,0.3);
-              padding: 2px 8px;
-              border-radius: 4px;
-              font-family: monospace;
-            }
-            a {
-              display: inline-block;
-              margin: 10px;
-              padding: 12px 24px;
-              background: #b0b0b0;
-              color: #1a1a1a;
-              text-decoration: none;
-              border-radius: 6px;
-              font-weight: 600;
-            }
-            a:hover { background: #d0d0d0; }
-          </style>
-        </head>
-        <body>
-          <div class="error-box">
-            <h1>🔍 検索に失敗しました</h1>
-            <p><strong>検索:</strong> <code>${searchQuery}</code></p>
-            <p>${searchError.message}</p>
-            <div>
-              <a href="javascript:location.reload()">再読み込み</a>
-              <a href="javascript:history.back()">戻る</a>
-            </div>
-          </div>
-        </body>
-        </html>
+        <html><body><h1>🔍 検索エラー</h1><p>${searchError.message}</p></body></html>
       `);
     } finally {
       searchPageBusy = false;
@@ -982,6 +830,7 @@ app.use(`${PROXY_PATH}:encodedUrl*`, async (req, res, next) => {
     next();
   }
 });
+
 
 
 
@@ -1384,6 +1233,15 @@ app.post(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
   try {
     const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
     const targetUrl = decodeProxyUrl(encodedUrl);
+    
+    // プロキシドメインへのリクエストをチェック
+    if (targetUrl.includes('yubikiri-proxy-pro-x.onrender.com')) {
+      console.log('⚠️ [POST] Rejected self-proxy request:', targetUrl);
+      return res.status(400).json({ 
+        error: 'Self-proxy not allowed',
+        message: 'This request should use the fallback route'
+      });
+    }
 
     console.log('📡 POST Proxying:', targetUrl);
 
@@ -1958,12 +1816,10 @@ app.post('/api/proxy', async (req, res) => {
 app.post('/api/x-inject-cookies', async (req, res) => {
   const { authToken, ct0Token, allCookies } = req.body;
 
-  // 🆕 完全なCookie配列を受け取る（推奨）
   if (allCookies && Array.isArray(allCookies) && allCookies.length > 0) {
     console.log('[API] Injecting ALL cookies from array:', allCookies.length);
     
     try {
-      // Cookieの形式を正規化
       const formattedCookies = allCookies.map(c => ({
         name: c.name,
         value: c.value,
@@ -1975,95 +1831,89 @@ app.post('/api/x-inject-cookies', async (req, res) => {
         expires: c.expires || Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60)
       }));
 
-      // メモリとファイルの両方に保存
       cachedXCookies = formattedCookies;
       saveCookiesToFile(formattedCookies);
       console.log('[API] ✅ All cookies cached:', formattedCookies.length);
-      console.log('[API] Cookie names:', formattedCookies.map(c => c.name).join(', '));
 
-      // xLoginPageの初期化
-      if (!xLoginPage) {
-        try {
-          console.log('[API] Creating xLoginPage...');
-          xLoginPage = await initXLoginPage();
-          console.log('[API] ✅ xLoginPage created');
-        } catch (initError) {
-          console.error('[API] ⚠️ Failed to create xLoginPage:', initError.message);
-          return res.json({
-            success: true,
-            message: `${formattedCookies.length} cookies cached (xLoginPage creation skipped)`,
-            cached: true,
-            persisted: true,
-            hasXLoginPage: false,
-            cookieCount: formattedCookies.length,
-            cookieNames: formattedCookies.map(c => c.name),
-            warning: 'xLoginPage creation failed, but cookies will work in proxy requests'
-          });
-        }
-      }
-
-      // xLoginPageにCookieをセット
+      // 🔴 xLoginPageをリセット
       if (xLoginPage) {
         try {
-          await xLoginPage.setCookie(...formattedCookies);
-          console.log('[API] ✅ Cookies set in xLoginPage');
+          console.log('[API] 🔄 Resetting xLoginPage...');
+          await xLoginPage.close().catch(() => {});
+          xLoginPage = null;
+          console.log('[API] ✅ xLoginPage closed');
         } catch (e) {
-          console.log('[API] ⚠️ Could not set cookies in page:', e.message);
+          console.log('[API] ⚠️ Could not close xLoginPage:', e.message);
+          xLoginPage = null;
         }
       }
 
-      // X.comに移動してCookieを有効化（オプショナル）
-      let currentUrl = 'N/A';
-      let pageCookies = [];
-      let hasAuthToken = false;
-
+      // 🔴 新しいxLoginPageを作成
       try {
-        if (xLoginPage) {
-          console.log('[API] Navigating to X.com to activate cookies...');
-          await xLoginPage.goto('https://x.com/', {
-            waitUntil: 'domcontentloaded',
-            timeout: 30000
-          }).catch(() => {});
-          
-          await new Promise(r => setTimeout(r, 2000));
-          
-          currentUrl = xLoginPage.url();
-          pageCookies = await xLoginPage.cookies();
-          hasAuthToken = pageCookies.some(c => c && c.name === 'auth_token');
-          
-          console.log('[API] Current URL:', currentUrl);
-          console.log('[API] Has auth_token:', hasAuthToken);
-          console.log('[API] Total cookies in page:', pageCookies.length);
-        }
-      } catch (navError) {
-        console.log('[API] ⚠️ Navigation skipped:', navError.message);
+        console.log('[API] 🆕 Creating fresh xLoginPage...');
+        xLoginPage = await initXLoginPage();
+        await xLoginPage.setCookie(...formattedCookies);
+        console.log('[API] ✅ Fresh xLoginPage created with cookies');
+        
+        // テストナビゲーション（タイムアウト短縮）
+        console.log('[API] 🧪 Testing navigation...');
+        await xLoginPage.goto('https://x.com/home', {
+          waitUntil: 'domcontentloaded',
+          timeout: 10000
+        }).catch((e) => {
+          console.log('[API] ⚠️ Test navigation timeout (expected):', e.message);
+        });
+        
+        await new Promise(r => setTimeout(r, 1000));
+        
+        const currentUrl = xLoginPage.url();
+        const pageCookies = await xLoginPage.cookies();
+        const hasAuthToken = pageCookies.some(c => c && c.name === 'auth_token');
+        
+        console.log('[API] Current URL:', currentUrl);
+        console.log('[API] Has auth_token:', hasAuthToken);
+        console.log('[API] Total cookies in page:', pageCookies.length);
+        
+        return res.json({
+          success: true,
+          message: `${formattedCookies.length} cookies injected successfully (fresh page)`,
+          isLoggedIn: hasAuthToken,
+          currentUrl,
+          cached: true,
+          persisted: true,
+          hasXLoginPage: true,
+          cookieCount: formattedCookies.length,
+          cookieNames: formattedCookies.map(c => c.name),
+          note: 'xLoginPage was reset and recreated with fresh cookies'
+        });
+        
+      } catch (initError) {
+        console.error('[API] ❌ Failed to create fresh xLoginPage:', initError.message);
+        
+        // xLoginPageなしでも動作するように
+        return res.json({
+          success: true,
+          message: `${formattedCookies.length} cookies cached (xLoginPage failed)`,
+          cached: true,
+          persisted: true,
+          hasXLoginPage: false,
+          cookieCount: formattedCookies.length,
+          cookieNames: formattedCookies.map(c => c.name),
+          warning: 'xLoginPage creation failed, but cookies will work via fallback routes',
+          error: initError.message
+        });
       }
-
-      return res.json({
-        success: true,
-        message: `${formattedCookies.length} cookies injected successfully`,
-        isLoggedIn: hasAuthToken,
-        currentUrl,
-        cached: true,
-        persisted: true,
-        hasXLoginPage: !!xLoginPage,
-        cookieCount: formattedCookies.length,
-        cookieNames: formattedCookies.map(c => c.name),
-        note: 'Cookies will persist across server restarts'
-      });
 
     } catch (error) {
       console.error('[API] Error processing cookies:', error.message);
-      console.error('[API] Stack:', error.stack);
       return res.status(500).json({ 
         success: false, 
-        error: error.message,
-        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        error: error.message
       });
     }
   }
 
-  // 従来の方法（auth_token + ct0のみ）- 後方互換性のため残す
+  // 従来の方法（auth_token + ct0のみ）
   if (!authToken || !ct0Token) {
     return res.status(400).json({ 
       success: false,
@@ -2072,10 +1922,6 @@ app.post('/api/x-inject-cookies', async (req, res) => {
   }
 
   try {
-    console.log('[API] Injecting basic cookies (auth_token + ct0)...');
-    console.log('[API] authToken length:', authToken.length);
-    console.log('[API] ct0Token length:', ct0Token.length);
-
     const cookies = [
       {
         name: 'auth_token',
@@ -2100,54 +1946,32 @@ app.post('/api/x-inject-cookies', async (req, res) => {
 
     cachedXCookies = cookies;
     saveCookiesToFile(cookies);
-    console.log('[API] ✅ Basic cookies cached');
 
-    if (!xLoginPage) {
-      try {
-        xLoginPage = await initXLoginPage();
-        console.log('[API] ✅ xLoginPage created');
-      } catch (initError) {
-        console.error('[API] ⚠️ Failed to create xLoginPage:', initError.message);
-        return res.json({
-          success: true,
-          message: 'Basic cookies cached (xLoginPage creation skipped)',
-          cached: true,
-          persisted: true,
-          hasXLoginPage: false,
-          cookieCount: 2,
-          warning: 'Only 2 cookies provided. Some features may not work. Use the Cookie Helper to input more cookies.'
-        });
-      }
-    }
-
+    // xLoginPageリセット
     if (xLoginPage) {
-      try {
-        await xLoginPage.setCookie(...cookies);
-        console.log('[API] ✅ Cookies set in xLoginPage');
-      } catch (e) {
-        console.log('[API] ⚠️ Could not set cookies:', e.message);
-      }
+      await xLoginPage.close().catch(() => {});
+      xLoginPage = null;
     }
+
+    xLoginPage = await initXLoginPage();
+    await xLoginPage.setCookie(...cookies);
 
     return res.json({
       success: true,
-      message: 'Basic cookies injected',
+      message: 'Basic cookies injected (fresh page)',
       cached: true,
       persisted: true,
-      hasXLoginPage: !!xLoginPage,
+      hasXLoginPage: true,
       cookieCount: 2,
-      cookieNames: ['auth_token', 'ct0'],
-      warning: '⚠️ Only 2 cookies provided. Some API features may not work correctly. Please use the Cookie Helper page to input all cookies for best results.'
+      warning: 'Only 2 cookies provided. Use Cookie Helper for best results.'
     });
 
   } catch (error) {
     console.error('[API] Cookie injection error:', error.message);
-    console.error('[API] Stack:', error.stack);
     return res.status(500).json({
       success: false,
       error: 'Cookie injection failed',
-      message: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      message: error.message
     });
   }
 });
