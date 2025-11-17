@@ -16,12 +16,13 @@ let browser;
 let puppeteer;
 let xLoginPage = null;
 let cachedXCookies = null;
-let xLoginPageBusy = false; // 🆕 ページ使用中フラグ
-const xLoginPageQueue = []; // 🆕 待機キュー
+let xLoginPageBusy = false;
+const xLoginPageQueue = [];
 
 // ===== 🔴 CRITICAL: 検索専用ページの実装 =====
 // xLoginPageとは完全に独立した検索専用ページ
-
+let searchPage = null;
+let searchPageBusy = false;
 
 const COOKIE_FILE = path.join(__dirname, '.x-cookies.json');
 
@@ -212,22 +213,29 @@ var earlyScript = `<script>
       var shouldProxy = false;
       var finalUrl = u;
       
-      if (typeof u === "string") {
-        var isFullXComUrl = u.startsWith("https://api.x.com") || 
-                           u.startsWith("https://x.com/i/") || 
-                           (u.startsWith("https://x.com") && u.includes("graphql"));
-        
-        var isRelativeApiPath = u.startsWith("/i/api/") || u.startsWith("/1.1/");
-        
-        var isNotProxied = !u.includes(PROXY_ORIGIN) && !u.includes("/proxy/");
-        
-        shouldProxy = (isFullXComUrl || isRelativeApiPath) && isNotProxied;
-        
-        if (shouldProxy && isRelativeApiPath) {
-          finalUrl = "https://x.com" + u;
-          console.log("[Proxy] XHR relative->absolute:", u, "=>", finalUrl.substring(0,60));
-        }
-      }
+     if (typeof u === "string") {
+  
+   var isSearchTimeline = u.includes('SearchTimeline') && u.includes('graphql');
+   var isFullXComUrl = u.startsWith("https://api.x.com") || 
+                     u.startsWith("https://x.com/i/") || 
+                     (u.startsWith("https://x.com") && u.includes("graphql"));
+  
+   var isRelativeApiPath = u.startsWith("/i/api/") || u.startsWith("/1.1/");
+   var isNotProxied = !u.includes(PROXY_ORIGIN) && !u.includes("/proxy/");
+  
+   shouldProxy = (isFullXComUrl || isRelativeApiPath) && isNotProxied;
+  
+   if (shouldProxy && isRelativeApiPath) {
+    finalUrl = "https://x.com" + u;
+    console.log("[Proxy] XHR relative->absolute:", u.substring(0,60));
+   }
+  
+  
+   if (isSearchTimeline) {
+    console.log("[Proxy] 🔍 SEARCH DETECTED in XHR!");
+    console.log("[Proxy] 🔍 Search URL:", finalUrl.substring(0,120));
+   }
+ }
       
       if(shouldProxy){
         console.log("[Proxy] XHR Intercepted:",finalUrl.substring(0,80));
@@ -283,23 +291,31 @@ var earlyScript = `<script>
     var finalUrl = u;
     
     if (u) {
-      var isFullXComUrl = typeof u === "string" && 
-                         (u.startsWith("https://api.x.com") || 
-                          u.startsWith("https://x.com/i/") || 
-                          (u.startsWith("https://x.com") && u.includes("graphql")));
-      
-      var isRelativeApiPath = typeof u === "string" && 
-                             (u.startsWith("/i/api/") || u.startsWith("/1.1/"));
-      
-      var isNotProxied = !u.includes(PROXY_ORIGIN) && !u.includes("/proxy/");
-      
-      shouldProxy = (isFullXComUrl || isRelativeApiPath) && isNotProxied;
-      
-      if (shouldProxy && isRelativeApiPath) {
-        finalUrl = "https://x.com" + u;
-        console.log("[Proxy] Fetch relative->absolute:", u, "=>", finalUrl.substring(0,60));
-      }
-    }
+  // 🔴 検索API検出を強化
+  var isSearchTimeline = u.includes('SearchTimeline') && u.includes('graphql');
+  var isFullXComUrl = typeof u === "string" && 
+                     (u.startsWith("https://api.x.com") || 
+                      u.startsWith("https://x.com/i/") || 
+                      (u.startsWith("https://x.com") && u.includes("graphql")));
+  
+  var isRelativeApiPath = typeof u === "string" && 
+                         (u.startsWith("/i/api/") || u.startsWith("/1.1/"));
+  
+  var isNotProxied = !u.includes(PROXY_ORIGIN) && !u.includes("/proxy/");
+  
+  shouldProxy = (isFullXComUrl || isRelativeApiPath) && isNotProxied;
+  
+  if (shouldProxy && isRelativeApiPath) {
+    finalUrl = "https://x.com" + u;
+    console.log("[Proxy] Fetch relative->absolute:", u.substring(0,60));
+  }
+  
+  // 🔴 SearchTimelineの特別ログ
+  if (isSearchTimeline) {
+    console.log("[Proxy] 🔍 SEARCH DETECTED in Fetch!");
+    console.log("[Proxy] 🔍 Search URL:", finalUrl.substring(0,120));
+  }
+}
     
     if(shouldProxy){
       console.log("[Proxy] Fetch intercepted:",finalUrl.substring(0,80));
@@ -785,7 +801,11 @@ app.use(`${PROXY_PATH}:encodedUrl*`, async (req, res, next) => {
       return next();
     }
     
-    console.log('🔍 [SEARCH] SearchTimeline API detected');
+    console.log('🔍 [SEARCH] ========================================');
+    console.log('🔍 [SEARCH] SearchTimeline API detected!');
+    console.log('🔍 [SEARCH] Target URL:', targetUrl.substring(0, 150));
+    console.log('🔍 [SEARCH] Has cookies:', !!(cachedXCookies && cachedXCookies.length > 0));
+    console.log('🔍 [SEARCH] searchPageBusy:', searchPageBusy);
     
     const urlObj = new URL(targetUrl);
     const variables = urlObj.searchParams.get('variables');
