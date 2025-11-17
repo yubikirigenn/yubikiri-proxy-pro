@@ -704,16 +704,30 @@ app.options('/i/api/*', (req, res) => {
 
 // 2️⃣ X.com API FALLBACK (最優先)
 app.all('/i/api/*', async (req, res) => {
-  const targetUrl = `https://x.com${req.path}${req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : ''}`;
+  // 🔴 修正: req.pathとreq.urlの両方でSearchTimelineを検出
+  const isSearchTimeline = (req.path.includes('SearchTimeline') || req.url.includes('SearchTimeline')) 
+                          && (req.path.includes('graphql') || req.url.includes('graphql'));
   
-  // 🔴 SearchTimeline検出を追加
-  const isSearchTimeline = targetUrl.includes('SearchTimeline') && targetUrl.includes('graphql');
+  const targetUrl = `https://x.com${req.path}${req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : ''}`;
   
   if (isSearchTimeline) {
     console.log('🔍 [SEARCH] ========================================');
     console.log('🔍 [SEARCH] SearchTimeline API detected!');
+    console.log('🔍 [SEARCH] req.path:', req.path.substring(0, 100));
+    console.log('🔍 [SEARCH] req.url:', req.url.substring(0, 150));
     console.log('🔍 [SEARCH] Target URL:', targetUrl.substring(0, 150));
-    console.log('🔍 [SEARCH] Query params:', req.url.substring(0, 200));
+    
+    // variablesパラメータを取得して検索クエリを表示
+    try {
+      const urlObj = new URL(targetUrl);
+      const variables = urlObj.searchParams.get('variables');
+      if (variables) {
+        const varsObj = JSON.parse(variables);
+        console.log('🔍 [SEARCH] Search query:', varsObj.rawQuery || 'N/A');
+      }
+    } catch (e) {
+      console.log('🔍 [SEARCH] Could not parse search query');
+    }
   } else {
     console.log('⚡ [FALLBACK] X.com API:', req.path.substring(0, 60));
   }
@@ -724,24 +738,6 @@ app.all('/i/api/*', async (req, res) => {
     if (!hasCookies) {
       return res.status(401).json({ error: 'Authentication required' });
     }
-
-    if (isSearchTimeline) {
-      console.log('🔍 [SEARCH] Processing SearchTimeline with axios...');
-      
-      // variablesパラメータを取得
-      const urlObj = new URL(targetUrl);
-      const variables = urlObj.searchParams.get('variables');
-      
-      if (variables) {
-        try {
-          const varsObj = JSON.parse(variables);
-          console.log('🔍 [SEARCH] Search query:', varsObj.rawQuery || 'N/A');
-        } catch (e) {
-          console.log('🔍 [SEARCH] Could not parse variables');
-        }
-      }
-    }
-
     
     const headers = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -774,6 +770,18 @@ app.all('/i/api/*', async (req, res) => {
       headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
     }
     
+    // 🔴 SearchTimeline用の詳細ログ
+    if (isSearchTimeline) {
+      console.log('🔍 [SEARCH] Sending request to X.com...');
+      console.log('🔍 [SEARCH] Headers check:', {
+        hasCookie: !!headers['Cookie'],
+        cookieLength: headers['Cookie'] ? headers['Cookie'].length : 0,
+        hasCsrf: !!headers['x-csrf-token'],
+        hasAuth: !!headers['authorization'],
+        hasActiveUser: !!headers['x-twitter-active-user']
+      });
+    }
+    
     const axiosConfig = {
       method: req.method,
       url: targetUrl,
@@ -787,31 +795,43 @@ app.all('/i/api/*', async (req, res) => {
     if (req.method === 'POST' || req.method === 'PUT') {
       axiosConfig.data = req.body;
     }
-
-    if (isSearchTimeline) {
-      console.log('🔍 [SEARCH] Sending request to X.com...');
-      console.log('🔍 [SEARCH] Headers:', {
-        hasCookie: !!headers['Cookie'],
-        hasCsrf: !!headers['x-csrf-token'],
-        hasAuth: !!headers['authorization']
-      });
-    }
     
     const response = await axios(axiosConfig);
-
+    
+    // 🔴 SearchTimelineのレスポンスログ
     if (isSearchTimeline) {
-      console.log('🔍 [SEARCH] Response status:', response.status);
-      console.log('🔍 [SEARCH] Content-Type:', response.headers['content-type']);
+      console.log('🔍 [SEARCH] ========================================');
+      console.log('🔍 [SEARCH] Response received!');
+      console.log('🔍 [SEARCH] Status:', response.status);
+      console.log('🔍 [SEARCH] Content-Type:', response.headers['content-type'] || 'N/A');
+      console.log('🔍 [SEARCH] Data size:', response.data.length, 'bytes');
       
       if (response.status !== 200) {
-        console.log('🔍 [SEARCH] ERROR - Response:', response.data.toString('utf-8').substring(0, 500));
+        try {
+          const errorBody = response.data.toString('utf-8');
+          console.log('🔍 [SEARCH] ERROR Response:', errorBody.substring(0, 500));
+        } catch (e) {
+          console.log('🔍 [SEARCH] Could not parse error response');
+        }
       } else {
-        console.log('🔍 [SEARCH] ✅ Success! Data size:', response.data.length);
+        console.log('🔍 [SEARCH] ✅ Success!');
+        try {
+          const jsonResponse = JSON.parse(response.data.toString('utf-8'));
+          if (jsonResponse.data && jsonResponse.data.search_by_raw_query) {
+            const timeline = jsonResponse.data.search_by_raw_query.search_timeline;
+            if (timeline && timeline.timeline && timeline.timeline.instructions) {
+              console.log('🔍 [SEARCH] Timeline instructions count:', timeline.timeline.instructions.length);
+            }
+          }
+        } catch (e) {
+          console.log('🔍 [SEARCH] Could not parse JSON response');
+        }
       }
+      console.log('🔍 [SEARCH] ========================================');
     }
     
     // 404エラーは静かにログ出力（user_flow.jsonなどは無視）
-    if (response.status !== 200 && response.status !== 201) {
+    if (response.status !== 200 && response.status !== 201 && !isSearchTimeline) {
       console.log(`⚠️ [FALLBACK] ${response.status}: ${req.path}`);
     }
     
