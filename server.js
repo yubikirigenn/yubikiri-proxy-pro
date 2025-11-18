@@ -821,19 +821,54 @@ app.all('/i/api/*', async (req, res) => {
       
       await page.goto(searchUrl, {
         waitUntil: 'domcontentloaded',
-        timeout: 20000
+        timeout: 30000  // 🔴 20秒→30秒に延長
       }).catch(err => {
         console.log('🔍 [SEARCH] Navigation timeout (continuing):', err.message);
       });
       
-      console.log('🔍 [SEARCH] Waiting for content...');
+      console.log('🔍 [SEARCH] Waiting for search results...');
+      
+      // 🔴 検索結果の要素を待つ（複数の方法を試す）
+      try {
+        await Promise.race([
+          page.waitForSelector('article[data-testid="tweet"]', { timeout: 10000 }),
+          page.waitForSelector('div[data-testid="cellInnerDiv"]', { timeout: 10000 }),
+          page.waitForSelector('section[aria-labelledby]', { timeout: 10000 }),
+          new Promise(resolve => setTimeout(resolve, 10000))
+        ]);
+        console.log('🔍 [SEARCH] Search results appeared!');
+      } catch (e) {
+        console.log('🔍 [SEARCH] Could not detect results, but continuing...');
+      }
+      
+      // 🔴 追加で3秒待つ
+      console.log('🔍 [SEARCH] Additional wait for dynamic content...');
       await new Promise(resolve => setTimeout(resolve, 3000));
+      
+      // 🔴 スクロールして追加コンテンツを読み込む
+      console.log('🔍 [SEARCH] Scrolling to load more content...');
+      await page.evaluate(() => {
+        window.scrollTo(0, document.body.scrollHeight / 2);
+      });
+      await new Promise(resolve => setTimeout(resolve, 1000));
       
       const html = await page.content();
       console.log('🔍 [SEARCH] Page content size:', html.length, 'bytes');
       
-      if (!html || html.length < 5000) {
-        throw new Error('Page content too small');
+      // 🔴 サイズチェックを緩和（14KBでもOK）
+      if (!html || html.length < 10000) {
+        throw new Error(`Page content too small: ${html.length} bytes`);
+      }
+      
+      // 🔴 検索結果が含まれているか確認
+      const hasTweets = html.includes('data-testid="tweet"') || 
+                       html.includes('cellInnerDiv') ||
+                       html.includes('primaryColumn');
+      
+      if (!hasTweets) {
+        console.log('🔍 [SEARCH] ⚠️ Warning: No tweet elements found in HTML');
+      } else {
+        console.log('🔍 [SEARCH] ✅ Tweet elements detected in HTML');
       }
       
       const rewrittenHTML = rewriteHTML(html, searchUrl);
@@ -862,7 +897,7 @@ app.all('/i/api/*', async (req, res) => {
     } finally {
       searchPageBusy = false;
     }
-  }
+   }   
   
   try {
     const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
