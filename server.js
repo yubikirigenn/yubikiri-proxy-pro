@@ -566,7 +566,7 @@ async function initXLoginPage() {
 
  async function getOrCreateSearchPage() {
   if (!searchPage) {
-   console.log('🔍 [SEARCH-PAGE] Creating dedicated search page...');
+    console.log('🔍 [SEARCH-PAGE] Creating dedicated search page...');
     const browserInstance = await initBrowser();
     searchPage = await browserInstance.newPage();
     
@@ -582,12 +582,71 @@ async function initXLoginPage() {
     const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
     if (hasCookies) {
       await searchPage.setCookie(...cachedXCookies);
-      console.log('✅ [SEARCH-PAGE] Cookies set');
+      console.log('✅ [SEARCH-PAGE] Cookies set:', cachedXCookies.length);
+    } else {
+      console.log('⚠️ [SEARCH-PAGE] No cookies available');
     }
     
     console.log('✅ [SEARCH-PAGE] Dedicated search page created');
   }
   return searchPage;
+}
+
+// 🔴 新しい関数: 最新のSearchTimeline Query IDを取得
+let cachedSearchQueryId = null;
+let lastQueryIdFetch = 0;
+const QUERY_ID_CACHE_DURATION = 3600000; // 1時間
+
+async function getLatestSearchQueryId() {
+  // キャッシュが有効なら返す
+  const now = Date.now();
+  if (cachedSearchQueryId && (now - lastQueryIdFetch) < QUERY_ID_CACHE_DURATION) {
+    console.log('🔍 [QUERY-ID] Using cached Query ID:', cachedSearchQueryId);
+    return cachedSearchQueryId;
+  }
+  
+  console.log('🔍 [QUERY-ID] Fetching latest Query ID from X.com...');
+  
+  try {
+    // X.comのメインJSファイルからQuery IDを抽出
+    const response = await axios.get('https://x.com/i/api/graphql/operations', {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': '*/*'
+      },
+      timeout: 10000,
+      validateStatus: () => true
+    });
+    
+    if (response.status === 200 && response.data) {
+      const content = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
+      
+      // SearchTimelineのQuery IDを正規表現で抽出
+      const match = content.match(/SearchTimeline["\s:]+["']([a-zA-Z0-9_-]{20,})['"]/);
+      
+      if (match && match[1]) {
+        cachedSearchQueryId = match[1];
+        lastQueryIdFetch = now;
+        console.log('🔍 [QUERY-ID] ✅ Found Query ID:', cachedSearchQueryId);
+        return cachedSearchQueryId;
+      }
+    }
+    
+    console.log('🔍 [QUERY-ID] ⚠️ Could not fetch, using fallback');
+  } catch (error) {
+    console.log('🔍 [QUERY-ID] ⚠️ Fetch error:', error.message);
+  }
+  
+  // フォールバック: 既知の複数のQuery IDを試す
+  const fallbackQueryIds = [
+    '7r8ibjHuK3MWUyzkzHNMYQ', // 現在のID
+    'gkjsKepM6gl_BQ2yKResVw', // 代替ID 1
+    'nK1dw4oV3k4w5TdtcAdSww', // 代替ID 2
+  ];
+  
+  cachedSearchQueryId = fallbackQueryIds[0];
+  console.log('🔍 [QUERY-ID] Using fallback Query ID:', cachedSearchQueryId);
+  return cachedSearchQueryId;
 }
 
 // 🆕 xLoginPageの排他制御付き使用
@@ -714,14 +773,31 @@ app.all('/i/api/*', async (req, res) => {
     console.log('🔍 [SEARCH] ========================================');
     console.log('🔍 [SEARCH] SearchTimeline API detected!');
     console.log('🔍 [SEARCH] req.path:', req.path.substring(0, 100));
-    console.log('🔍 [SEARCH] req.url:', req.url.substring(0, 150));
+    
+    // 🔴 Query IDを置き換える
+    const currentQueryId = req.path.match(/\/graphql\/([^\/]+)\//);
+    if (currentQueryId && currentQueryId[1]) {
+      console.log('🔍 [SEARCH] Original Query ID:', currentQueryId[1]);
+      
+      // 最新のQuery IDを取得
+      const latestQueryId = await getLatestSearchQueryId();
+      
+      // URLを新しいQuery IDで置き換え
+      if (latestQueryId && latestQueryId !== currentQueryId[1]) {
+        const oldTargetUrl = targetUrl;
+        targetUrl = targetUrl.replace(
+          `/graphql/${currentQueryId[1]}/`,
+          `/graphql/${latestQueryId}/`
+        );
+        console.log('🔍 [SEARCH] ✅ Query ID updated:', currentQueryId[1], '=>', latestQueryId);
+        console.log('🔍 [SEARCH] New Target URL:', targetUrl.substring(0, 150));
+      } else {
+        console.log('🔍 [SEARCH] Query ID already up-to-date');
+      }
+    }
+    
     console.log('🔍 [SEARCH] Target URL:', targetUrl.substring(0, 150));
     
-    const queryIdMatch = req.path.match(/\/graphql\/([^\/]+)\//);
-    if (queryIdMatch) {
-      console.log('🔍 [SEARCH] Query ID:', queryIdMatch[1]);
-    }
-
     // variablesパラメータを取得して検索クエリを表示
     try {
       const urlObj = new URL(targetUrl);
@@ -729,16 +805,18 @@ app.all('/i/api/*', async (req, res) => {
       if (variables) {
         const varsObj = JSON.parse(variables);
         console.log('🔍 [SEARCH] Search query:', varsObj.rawQuery || 'N/A');
-      const features = urlObj.searchParams.get('features');
+        
+        const features = urlObj.searchParams.get('features');
         if (features) {
-          console.log('🔍 [SEARCH] Has features param:', true);
+          console.log('🔍 [SEARCH] Has features param: true');
         }
       }
     } catch (e) {
       console.log('🔍 [SEARCH] Could not parse search query');
     }
+  } else {
+    console.log('⚡ [FALLBACK] X.com API:', req.path.substring(0, 60));
   }
-
   
   try {
     const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
