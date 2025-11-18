@@ -717,6 +717,11 @@ app.all('/i/api/*', async (req, res) => {
     console.log('🔍 [SEARCH] req.url:', req.url.substring(0, 150));
     console.log('🔍 [SEARCH] Target URL:', targetUrl.substring(0, 150));
     
+    const queryIdMatch = req.path.match(/\/graphql\/([^\/]+)\//);
+    if (queryIdMatch) {
+      console.log('🔍 [SEARCH] Query ID:', queryIdMatch[1]);
+    }
+
     // variablesパラメータを取得して検索クエリを表示
     try {
       const urlObj = new URL(targetUrl);
@@ -724,13 +729,16 @@ app.all('/i/api/*', async (req, res) => {
       if (variables) {
         const varsObj = JSON.parse(variables);
         console.log('🔍 [SEARCH] Search query:', varsObj.rawQuery || 'N/A');
+      const features = urlObj.searchParams.get('features');
+        if (features) {
+          console.log('🔍 [SEARCH] Has features param:', true);
+        }
       }
     } catch (e) {
       console.log('🔍 [SEARCH] Could not parse search query');
     }
-  } else {
-    console.log('⚡ [FALLBACK] X.com API:', req.path.substring(0, 60));
   }
+
   
   try {
     const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
@@ -745,7 +753,8 @@ app.all('/i/api/*', async (req, res) => {
       'Accept-Language': 'en-US,en;q=0.9',
       'Content-Type': req.headers['content-type'] || 'application/json',
       'Origin': 'https://x.com',
-      'Referer': 'https://x.com/home',
+      // 🔴 修正: SearchTimelineの場合はRefererを検索ページに
+      'Referer': isSearchTimeline ? 'https://x.com/search' : 'https://x.com/home',
     };
     
     const cookieString = cachedXCookies
@@ -773,12 +782,14 @@ app.all('/i/api/*', async (req, res) => {
     // 🔴 SearchTimeline用の詳細ログ
     if (isSearchTimeline) {
       console.log('🔍 [SEARCH] Sending request to X.com...');
+      console.log('🔍 [SEARCH] Full URL:', targetUrl); // 完全なURLをログ
       console.log('🔍 [SEARCH] Headers check:', {
         hasCookie: !!headers['Cookie'],
         cookieLength: headers['Cookie'] ? headers['Cookie'].length : 0,
         hasCsrf: !!headers['x-csrf-token'],
         hasAuth: !!headers['authorization'],
-        hasActiveUser: !!headers['x-twitter-active-user']
+        hasActiveUser: !!headers['x-twitter-active-user'],
+        referer: headers['Referer']
       });
     }
     
@@ -809,9 +820,18 @@ app.all('/i/api/*', async (req, res) => {
       if (response.status !== 200) {
         try {
           const errorBody = response.data.toString('utf-8');
-          console.log('🔍 [SEARCH] ERROR Response:', errorBody.substring(0, 500));
+          console.log('🔍 [SEARCH] ❌ ERROR Response body:');
+          console.log(errorBody.substring(0, 1000)); // 🔴 1000文字に増やす
+          
+          // 🔴 JSONとしてパース試行
+          try {
+            const errorJson = JSON.parse(errorBody);
+            console.log('🔍 [SEARCH] Error JSON:', JSON.stringify(errorJson, null, 2));
+          } catch (e) {
+            console.log('🔍 [SEARCH] (Not JSON format)');
+          }
         } catch (e) {
-          console.log('🔍 [SEARCH] Could not parse error response');
+          console.log('🔍 [SEARCH] Could not parse error response:', e.message);
         }
       } else {
         console.log('🔍 [SEARCH] ✅ Success!');
