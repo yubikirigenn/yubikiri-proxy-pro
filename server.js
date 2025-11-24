@@ -7,13 +7,22 @@ const url = require('url');
 const fs = require('fs');
 require('dotenv').config();
 
+// 🔴 NEW: puppeteer-extraに置き換え
+const puppeteerExtra = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const AdblockerPlugin = require('puppeteer-extra-plugin-adblocker');
+
+// 🔴 ステルスプラグインを適用
+puppeteerExtra.use(StealthPlugin());
+puppeteerExtra.use(AdblockerPlugin({ blockTrackers: true }));
+
 // ===== 2. INITIALIZATION =====
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// 変数宣言（ファイル内で一度だけ）
+// 変数宣言(ファイル内で一度だけ)
 let browser;
-let puppeteer;
+let puppeteer; // これはpuppeteer-extraになる
 let xLoginPage = null;
 let cachedXCookies = null;
 let xLoginPageBusy = false;
@@ -62,352 +71,17 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// 🔴 CRITICAL FIX: 静的ファイルを後で提供（API routesの後）
-// app.use(express.static('public')); // ← ここでは使わない
+// ... 残りのコードは同じ
 
-// ===== 5. UTILITY FUNCTIONS =====
-function encodeProxyUrl(targetUrl) {
-  return Buffer.from(targetUrl).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-}
-
-function decodeProxyUrl(encoded) {
-  const base64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
-  return Buffer.from(base64, 'base64').toString('utf-8');
-}
-
-// プロキシパスを変更（フィルタリング回避）
-const PROXY_PATH = '/proxy/'; // 標準的なプロキシパス
-
-function rewriteHTML(html, baseUrl) {
-  var urlObj = new url.URL(baseUrl);
-  var origin = urlObj.protocol + '//' + urlObj.host;
-  var proxyOrigin = process.env.RENDER 
-    ? ('https://' + process.env.RENDER_EXTERNAL_HOSTNAME)
-    : ('http://localhost:' + PORT);
-
-  function isAlreadyProxied(urlString) {
-    return urlString.includes('/proxy/') || urlString.includes(proxyOrigin);
-  }
-
-  // href書き換え
-  html = html.replace(/href\s*=\s*["']([^"']+)["']/gi, function(match, href) {
-    if (href.startsWith('javascript:') || href.startsWith('#') || 
-        href.startsWith('mailto:') || href.startsWith('tel:') || 
-        isAlreadyProxied(href)) {
-      return match;
-    }
-    var absoluteUrl = href;
-    try {
-      if (href.startsWith('//')) {
-        absoluteUrl = urlObj.protocol + href;
-      } else if (href.startsWith('/')) {
-        absoluteUrl = origin + href;
-      } else if (!href.startsWith('http')) {
-        absoluteUrl = new url.URL(href, baseUrl).href;
-      }
-      return 'href="/proxy/' + encodeProxyUrl(absoluteUrl) + '"';
-    } catch (e) {
-      return match;
-    }
-  });
-
-  // src書き換え
-  html = html.replace(/src\s*=\s*["']([^"']+)["']/gi, function(match, src) {
-    if (src.startsWith('data:') || src.startsWith('blob:') || isAlreadyProxied(src)) {
-      return match;
-    }
-    var absoluteUrl = src;
-    try {
-      if (src.startsWith('//')) {
-        absoluteUrl = urlObj.protocol + src;
-      } else if (src.startsWith('/')) {
-        absoluteUrl = origin + src;
-      } else if (!src.startsWith('http')) {
-        absoluteUrl = new url.URL(src, baseUrl).href;
-      }
-      return 'src="/proxy/' + encodeProxyUrl(absoluteUrl) + '"';
-    } catch (e) {
-      return match;
-    }
-  });
-
-  // video source書き換え
-  html = html.replace(/<source\s+([^>]*?)src\s*=\s*["']([^"']+)["']([^>]*?)>/gi, function(match, before, src, after) {
-    if (src.startsWith('data:') || src.startsWith('blob:') || isAlreadyProxied(src)) {
-      return match;
-    }
-    var absoluteUrl = src;
-    try {
-      if (src.startsWith('//')) {
-        absoluteUrl = urlObj.protocol + src;
-      } else if (src.startsWith('/')) {
-        absoluteUrl = origin + src;
-      } else if (!src.startsWith('http')) {
-        absoluteUrl = new url.URL(src, baseUrl).href;
-      }
-      return '<source ' + before + 'src="/proxy/' + encodeProxyUrl(absoluteUrl) + '"' + after + '>';
-    } catch (e) {
-      return match;
-    }
-  });
-
-  // action書き換え
-  html = html.replace(/action\s*=\s*["']([^"']+)["']/gi, function(match, action) {
-    if (isAlreadyProxied(action)) {
-      return match;
-    }
-    var absoluteUrl = action;
-    try {
-      if (action.startsWith('//')) {
-        absoluteUrl = urlObj.protocol + action;
-      } else if (action.startsWith('/')) {
-        absoluteUrl = origin + action;
-      } else if (!action.startsWith('http')) {
-        absoluteUrl = new url.URL(action, baseUrl).href;
-      }
-      return 'action="/proxy/' + encodeProxyUrl(absoluteUrl) + '"';
-    } catch (e) {
-      return match;
-    }
-  });
-
-  // CSP, スクリプトを簡潔に
-  var cspMeta = '<meta http-equiv="Content-Security-Policy" content="connect-src * blob: data:; default-src * \'unsafe-inline\' \'unsafe-eval\' blob: data:; script-src * \'unsafe-inline\' \'unsafe-eval\' blob:;">';
-  // server.js の rewriteHTML 関数内の earlyScript を以下に置き換え
-
-var earlyScript = `<script>
-(function(){
-  console.log("[Proxy] Starting enhanced intercept v4");
-  
-  var PROXY_ORIGIN="${proxyOrigin}";
-  var PROXY_PATH="${PROXY_PATH}";
-  
-  function encodeProxyUrl(u){
-    return PROXY_ORIGIN+PROXY_PATH+btoa(u).replace(/\\+/g,"-").replace(/\\//g,"_").replace(/=/g,"")
-  }
-  
-  function getCookieValue(name) {
-    const value = document.cookie.match('(^|;)\\\\s*' + name + '\\\\s*=\\\\s*([^;]+)');
-    return value ? value.pop() : '';
-  }
-  
-  console.log("[Proxy] Cookie check:");
-  console.log("  auth_token:", getCookieValue('auth_token') ? 'EXISTS' : 'MISSING');
-  console.log("  ct0:", getCookieValue('ct0') ? 'EXISTS' : 'MISSING');
-  console.log("  Total cookies:", document.cookie.split(';').length);
-  
-  // XHRインターセプト
-  var OrigXHR=window.XMLHttpRequest;
-  window.XMLHttpRequest=function(){
-    var xhr=new OrigXHR();
-    var origOpen=xhr.open;
-    var origSend=xhr.send;
-    var isProxied=false;
-    var isAsync=true;
-    var internalTimeout=0;
-    
-    xhr.open=function(m,u,a,us,p){
-      isAsync = (a === undefined || a === true);
-      
-      // プロキシ対象判定（相対パス対応）
-      var shouldProxy = false;
-      var finalUrl = u;
-      
-     if (typeof u === "string") {
-  
-   var isSearchTimeline = u.includes('SearchTimeline') && u.includes('graphql');
-   var isFullXComUrl = u.startsWith("https://api.x.com") || 
-                     u.startsWith("https://x.com/i/") || 
-                     (u.startsWith("https://x.com") && u.includes("graphql"));
-  
-   var isRelativeApiPath = u.startsWith("/i/api/") || u.startsWith("/1.1/");
-   var isNotProxied = !u.includes(PROXY_ORIGIN) && !u.includes("/proxy/");
-  
-   shouldProxy = (isFullXComUrl || isRelativeApiPath) && isNotProxied;
-  
-   if (shouldProxy && isRelativeApiPath) {
-    finalUrl = "https://x.com" + u;
-    console.log("[Proxy] XHR relative->absolute:", u.substring(0,60));
-   }
-  
-  
-   if (isSearchTimeline) {
-    console.log("[Proxy] 🔍 SEARCH DETECTED in XHR!");
-    console.log("[Proxy] 🔍 Search URL:", finalUrl.substring(0,120));
-   }
- }
-      
-      if(shouldProxy){
-        console.log("[Proxy] XHR Intercepted:",finalUrl.substring(0,80));
-        console.log("[Proxy] Async mode:", isAsync);
-        
-        const hasCookies = document.cookie.length > 0;
-        console.log("[Proxy] Has cookies:", hasCookies);
-        
-        var pu=encodeProxyUrl(finalUrl);
-        isProxied=true;
-        return origOpen.call(this,m,pu,a,us,p)
-      }
-      return origOpen.call(this,m,u,a,us,p)
-    };
-    
-    // timeoutプロパティの保護
-    Object.defineProperty(xhr, 'timeout', {
-      get: function() {
-        return internalTimeout;
-      },
-      set: function(val) {
-        internalTimeout = val;
-        if (!isAsync) {
-          return;
-        }
-        try {
-          if (!isProxied) {
-            Object.getOwnPropertyDescriptor(OrigXHR.prototype, 'timeout').set.call(this, val);
-          }
-        } catch(e) {}
-      },
-      configurable: true
-    });
-    
-    xhr.send=function(){
-      if(isProxied && isAsync){
-        this.withCredentials=true;
-        console.log("[Proxy] XHR credentials enabled");
-      }
-      return origSend.apply(this,arguments)
-    };
-    
-    return xhr
-  };
-  
-  // Fetchインターセプト
-  var origFetch=window.fetch;
-  window.fetch=function(r,o){
-    var u=typeof r==="string"?r:(r.url||r);
-    
-    // プロキシ対象判定（相対パス対応）
-    var shouldProxy = false;
-    var finalUrl = u;
-    
-    if (u) {
-  // 🔴 検索API検出を強化
-  var isSearchTimeline = u.includes('SearchTimeline') && u.includes('graphql');
-  var isFullXComUrl = typeof u === "string" && 
-                     (u.startsWith("https://api.x.com") || 
-                      u.startsWith("https://x.com/i/") || 
-                      (u.startsWith("https://x.com") && u.includes("graphql")));
-  
-  var isRelativeApiPath = typeof u === "string" && 
-                         (u.startsWith("/i/api/") || u.startsWith("/1.1/"));
-  
-  var isNotProxied = !u.includes(PROXY_ORIGIN) && !u.includes("/proxy/");
-  
-  shouldProxy = (isFullXComUrl || isRelativeApiPath) && isNotProxied;
-  
-  if (shouldProxy && isRelativeApiPath) {
-    finalUrl = "https://x.com" + u;
-    console.log("[Proxy] Fetch relative->absolute:", u.substring(0,60));
-  }
-  
-  // 🔴 SearchTimelineの特別ログ
-  if (isSearchTimeline) {
-    console.log("[Proxy] 🔍 SEARCH DETECTED in Fetch!");
-    console.log("[Proxy] 🔍 Search URL:", finalUrl.substring(0,120));
-  }
-}
-    
-    if(shouldProxy){
-      console.log("[Proxy] Fetch intercepted:",finalUrl.substring(0,80));
-      
-      const hasCookies = document.cookie.length > 0;
-      console.log("[Proxy] Has cookies:", hasCookies);
-      
-      var pu=encodeProxyUrl(finalUrl);
-      var newOpts=Object.assign({},o||{});
-      
-      newOpts.credentials="include";
-      
-      if (!newOpts.headers) {
-        newOpts.headers = {};
-      }
-      
-      const ct0 = getCookieValue('ct0');
-      if (ct0 && !newOpts.headers['x-csrf-token']) {
-        newOpts.headers['x-csrf-token'] = ct0;
-        console.log("[Proxy] Added x-csrf-token");
-      }
-      
-      if(typeof r==="string"){
-        return origFetch(pu,newOpts)
-      }else{
-        var clonedHeaders=new Headers(r.headers||{});
-        
-        if (ct0 && !clonedHeaders.has('x-csrf-token')) {
-          clonedHeaders.set('x-csrf-token', ct0);
-        }
-        
-        var nr=new Request(pu,{
-          method:r.method||"GET",
-          headers:clonedHeaders,
-          body:r.body,
-          credentials:"include"
-        });
-        return origFetch(nr,newOpts)
-      }
-    }
-    return origFetch(r,o)
-  };
-  
-  console.log("[Proxy] Enhanced intercept OK");
-  
-  // Service Worker無効化
-  if ('serviceWorker' in navigator) {
-    console.log("[Proxy] Blocking Service Worker registration");
-    
-    navigator.serviceWorker.getRegistrations().then(function(registrations) {
-      for(let registration of registrations) {
-        registration.unregister();
-        console.log("[Proxy] Unregistered Service Worker");
-      }
-    });
-    
-    var origRegister = navigator.serviceWorker.register;
-    navigator.serviceWorker.register = function() {
-      console.log("[Proxy] Service Worker registration blocked");
-      return Promise.reject(new Error('Service Workers disabled by proxy'));
-    };
-  }
-})();
-</script>`;
-  var mainScript = '<script>document.addEventListener("visibilitychange",function(){if(!document.hidden){console.log("[Proxy] Tab visible")}},true);</script>';
-
-  // <head>に注入
-  html = html.replace(/<head([^>]*)>/i, function(match, attrs) {
-    return '<head' + attrs + '>' + cspMeta + earlyScript + mainScript;
-  });
-  
-  // Google削除
-  html = html.replace(/<script[^>]*src=[^>]*google[^>]*>[\s\S]*?<\/script>/gi, '');
-  html = html.replace(/<iframe[^>]*google[^>]*>[\s\S]*?<\/iframe>/gi, '');
-
-  // charset確保
-  if (!html.includes('charset')) {
-    html = html.replace(/<head([^>]*)>/i, '<head$1><meta charset="UTF-8">');
-  }
-
-  return html;
-}
-      
 // ===== 6. PUPPETEER FUNCTIONS =====
 async function loadPuppeteer() {
   if (process.env.RENDER) {
-    const puppeteerCore = require('puppeteer-core');
+    // 🔴 Render環境: puppeteer-coreとしてpuppeteer-extraを使用
     const chromium = require('@sparticuz/chromium');
-    return { puppeteerCore, chromium, isRender: true };
+    return { puppeteerCore: puppeteerExtra, chromium, isRender: true };
   } else {
-    const puppeteerLib = require('puppeteer');
-    return { puppeteerCore: puppeteerLib, chromium: null, isRender: false };
+    // 🔴 ローカル環境: puppeteer-extraを直接使用
+    return { puppeteerCore: puppeteerExtra, chromium: null, isRender: false };
   }
 }
 
@@ -424,8 +98,10 @@ async function initBrowser() {
         launchConfig = {
           args: [
             ...chromium.args,
-            '--disable-blink-features=AutomationControlled',
-            '--disable-features=IsolateOrigins,site-per-process'
+            '--disable-blink-features=AutomationControlled', // 🔴 重要
+            '--disable-features=IsolateOrigins,site-per-process',
+            '--no-sandbox',
+            '--disable-setuid-sandbox'
           ],
           defaultViewport: chromium.defaultViewport,
           executablePath: await chromium.executablePath(),
@@ -440,15 +116,32 @@ async function initBrowser() {
             '--disable-setuid-sandbox',
             '--disable-dev-shm-usage',
             '--disable-gpu',
-            '--disable-blink-features=AutomationControlled',
+            '--disable-blink-features=AutomationControlled', // 🔴 重要
             '--disable-features=IsolateOrigins,site-per-process'
           ],
           protocolTimeout: 120000
         };
       }
 
+      // 🔴 puppeteer-extraを使用してブラウザを起動
       browser = await puppeteer.puppeteerCore.launch(launchConfig);
-      console.log('✅ Browser initialized with extended timeout');
+      console.log('✅ Browser initialized with stealth mode');
+      
+      // 🔴 ステルスモードが有効か確認
+      const pages = await browser.pages();
+      if (pages.length > 0) {
+        const testPage = pages[0];
+        const isWebDriverDefined = await testPage.evaluate(() => {
+          return navigator.webdriver !== undefined;
+        });
+        
+        if (isWebDriverDefined) {
+          console.log('⚠️ Warning: navigator.webdriver is still defined');
+        } else {
+          console.log('✅ Stealth mode: navigator.webdriver is undefined');
+        }
+      }
+      
     } catch (error) {
       console.error('❌ Browser launch failed:', error.message);
       throw error;
