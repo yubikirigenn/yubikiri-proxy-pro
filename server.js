@@ -528,14 +528,18 @@ async function initXLoginPage() {
     request.continue().catch(() => {});
   });
 
+  // 🔴 CRITICAL: 最強のステルスモード設定
   await page.evaluateOnNewDocument(() => {
-    delete Object.getPrototypeOf(navigator).webdriver;
-    
+    // 1. navigator.webdriver を完全に削除
     Object.defineProperty(navigator, 'webdriver', {
       get: () => undefined,
-      configurable: false
+      configurable: true
     });
-
+    
+    // さらに深いレベルで削除
+    delete navigator.__proto__.webdriver;
+    
+    // 2. Chrome オブジェクトを正常化
     window.chrome = {
       app: { isInstalled: false },
       runtime: {},
@@ -543,6 +547,25 @@ async function initXLoginPage() {
       csi: function() {},
     };
 
+    // 3. Permissions API をモック
+    const originalQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (parameters) => (
+      parameters.name === 'notifications' ?
+        Promise.resolve({ state: Notification.permission }) :
+        originalQuery(parameters)
+    );
+
+    // 4. Plugin の長さを正常化
+    Object.defineProperty(navigator, 'plugins', {
+      get: () => [1, 2, 3, 4, 5],
+    });
+
+    // 5. Languages を正常化
+    Object.defineProperty(navigator, 'languages', {
+      get: () => ['en-US', 'en'],
+    });
+
+    // 6. Google 関連を完全ブロック
     Object.defineProperty(window, 'google', {
       get() { return undefined; },
       set() { return false; },
@@ -555,6 +578,7 @@ async function initXLoginPage() {
       configurable: false
     });
 
+    // 7. エラーログを抑制
     const originalError = console.error;
     const originalWarn = console.warn;
     
@@ -577,10 +601,40 @@ async function initXLoginPage() {
       }
     });
 
-    console.log('[Ultra-Stealth] Initialized');
+    // 8. Automation フラグを削除
+    delete navigator.constructor.prototype.webdriver;
+    
+    // 9. Headless 検出対策
+    Object.defineProperty(navigator, 'vendor', {
+      get: () => 'Google Inc.',
+    });
+
+    Object.defineProperty(navigator, 'platform', {
+      get: () => 'Win32',
+    });
+
+    Object.defineProperty(navigator, 'hardwareConcurrency', {
+      get: () => 8,
+    });
+
+    // 10. deviceMemory を正常化
+    Object.defineProperty(navigator, 'deviceMemory', {
+      get: () => 8,
+    });
+
+    console.log('[Ultra-Stealth] Initialized - navigator.webdriver:', navigator.webdriver);
   });
 
   console.log('✅ X login page initialized with ultra-stealth mode');
+  
+  // 🔴 ステルスモードが正しく適用されたか確認
+  const webdriverCheck = await page.evaluate(() => navigator.webdriver);
+  if (webdriverCheck === undefined) {
+    console.log('✅ Stealth verification: navigator.webdriver is undefined');
+  } else {
+    console.log('⚠️ Stealth verification failed: navigator.webdriver is', webdriverCheck);
+  }
+  
   return page;
 }
 
