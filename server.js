@@ -769,135 +769,149 @@ app.all('/i/api/*', async (req, res) => {
   
   // 🔴 SearchTimelineの場合、Puppeteerで処理
   if (isSearchTimeline) {
-    console.log('🔍 [SEARCH] ========================================');
-    console.log('🔍 [SEARCH] SearchTimeline detected - Using Puppeteer');
-    
-    // 検索クエリを抽出
-    let searchQuery = '';
-    try {
-      const urlObj = new URL(targetUrl);
-      const variables = urlObj.searchParams.get('variables');
-      if (variables) {
-        const varsObj = JSON.parse(variables);
-        searchQuery = varsObj.rawQuery || '';
-        console.log('🔍 [SEARCH] Search query:', searchQuery);
-      }
-    } catch (e) {
-      console.log('🔍 [SEARCH] Could not parse query');
+  console.log('🔍 [SEARCH] ========================================');
+  console.log('🔍 [SEARCH] SearchTimeline detected - Using Puppeteer');
+  
+  let searchQuery = '';
+  try {
+    const urlObj = new URL(targetUrl);
+    const variables = urlObj.searchParams.get('variables');
+    if (variables) {
+      const varsObj = JSON.parse(variables);
+      searchQuery = varsObj.rawQuery || '';
+      console.log('🔍 [SEARCH] Search query:', searchQuery);
     }
+  } catch (e) {
+    console.log('🔍 [SEARCH] Could not parse query');
+  }
+  
+  if (!searchQuery) {
+    console.log('🔍 [SEARCH] ❌ No search query found');
+    return res.status(400).json({ error: 'No search query' });
+  }
+  
+  const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
+  
+  if (!hasCookies) {
+    console.log('🔍 [SEARCH] ❌ No cookies available');
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+  
+  if (searchPageBusy) {
+    console.log('🔍 [SEARCH] ⏳ Search page busy, returning 503');
+    return res.status(503).send(`
+      <!DOCTYPE html>
+      <html><body>
+        <h1>🔍 検索処理中...</h1>
+        <p>別の検索を処理中です。数秒後に再試行してください。</p>
+        <script>setTimeout(() => location.reload(), 3000);</script>
+      </body></html>
+    `);
+  }
+  
+  searchPageBusy = true;
+  
+  try {
+    console.log('🔍 [SEARCH] Using xLoginPage for search...');
     
-    if (!searchQuery) {
-      console.log('🔍 [SEARCH] ❌ No search query found');
-      return res.status(400).json({ error: 'No search query' });
-    }
-    
-    const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
-    
-    if (!hasCookies) {
-      console.log('🔍 [SEARCH] ❌ No cookies available');
-      return res.status(401).json({ error: 'Authentication required' });
-    }
-    
-    if (searchPageBusy) {
-      console.log('🔍 [SEARCH] ⏳ Search page busy, returning 503');
-      return res.status(503).send(`
-        <!DOCTYPE html>
-        <html><body>
-          <h1>🔍 検索処理中...</h1>
-          <p>別の検索を処理中です。数秒後に再試行してください。</p>
-          <script>setTimeout(() => location.reload(), 3000);</script>
-        </body></html>
-      `);
-    }
-    
-    searchPageBusy = true;
-    
-    try {
-      console.log('🔍 [SEARCH] Creating/getting search page...');
-      const page = await getOrCreateSearchPage();
-      
+    // ✅ 優先度2: xLoginPageを使用(既に動作しているため)
+    const htmlContent = await useXLoginPage(async () => {
       const searchUrl = `https://x.com/search?q=${encodeURIComponent(searchQuery)}&src=typed_query`;
       console.log('🔍 [SEARCH] Navigating to:', searchUrl);
       
-      await page.goto(searchUrl, {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000  // 🔴 20秒→30秒に延長
+      // ✅ networkidle2で待つ
+      await xLoginPage.goto(searchUrl, {
+        waitUntil: 'networkidle2',
+        timeout: 60000
       }).catch(err => {
         console.log('🔍 [SEARCH] Navigation timeout (continuing):', err.message);
       });
       
       console.log('🔍 [SEARCH] Waiting for search results...');
       
-      // 🔴 検索結果の要素を待つ（複数の方法を試す）
-      try {
-        await Promise.race([
-          page.waitForSelector('article[data-testid="tweet"]', { timeout: 10000 }),
-          page.waitForSelector('div[data-testid="cellInnerDiv"]', { timeout: 10000 }),
-          page.waitForSelector('section[aria-labelledby]', { timeout: 10000 }),
-          new Promise(resolve => setTimeout(resolve, 10000))
-        ]);
-        console.log('🔍 [SEARCH] Search results appeared!');
-      } catch (e) {
-        console.log('🔍 [SEARCH] Could not detect results, but continuing...');
+      // ✅ 複数のセレクターを順番に試す
+      const selectors = [
+        'article[data-testid="tweet"]',
+        'div[data-testid="cellInnerDiv"]',
+        'section[role="region"]',
+        'div[data-testid="primaryColumn"]'
+      ];
+      
+      let foundSelector = null;
+      for (const selector of selectors) {
+        try {
+          await xLoginPage.waitForSelector(selector, { 
+            visible: true,
+            timeout: 5000 
+          });
+          console.log('🔍 [SEARCH] ✅ Found:', selector);
+          foundSelector = selector;
+          break;
+        } catch (e) {
+          console.log('🔍 [SEARCH] ❌ Not found:', selector);
+        }
       }
       
-      // 🔴 追加で3秒待つ
+      if (!foundSelector) {
+        console.log('🔍 [SEARCH] ⚠️ No known selectors found, but continuing...');
+      }
+      
+      // ✅ 追加で3秒待つ
       console.log('🔍 [SEARCH] Additional wait for dynamic content...');
       await new Promise(resolve => setTimeout(resolve, 3000));
       
-      // 🔴 スクロールして追加コンテンツを読み込む
+      // ✅ スクロールして追加コンテンツを読み込む
       console.log('🔍 [SEARCH] Scrolling to load more content...');
-      await page.evaluate(() => {
+      await xLoginPage.evaluate(() => {
         window.scrollTo(0, document.body.scrollHeight / 2);
       });
       await new Promise(resolve => setTimeout(resolve, 1000));
       
-      const html = await page.content();
+      // HTML取得
+      const html = await xLoginPage.content();
       console.log('🔍 [SEARCH] Page content size:', html.length, 'bytes');
       
-      // 🔴 サイズチェックを緩和（14KBでもOK）
-      if (!html || html.length < 10000) {
-        throw new Error(`Page content too small: ${html.length} bytes`);
-      }
-      
-      // 🔴 検索結果が含まれているか確認
+      // ✅ コンテンツチェック
       const hasTweets = html.includes('data-testid="tweet"') || 
                        html.includes('cellInnerDiv') ||
                        html.includes('primaryColumn');
       
-      if (!hasTweets) {
-        console.log('🔍 [SEARCH] ⚠️ Warning: No tweet elements found in HTML');
-      } else {
+      if (hasTweets) {
         console.log('🔍 [SEARCH] ✅ Tweet elements detected in HTML');
+      } else {
+        console.log('🔍 [SEARCH] ⚠️ Warning: No tweet elements found in HTML');
       }
       
-      const rewrittenHTML = rewriteHTML(html, searchUrl);
-      
-      console.log('🔍 [SEARCH] ✅ Success! Returning HTML');
-      console.log('🔍 [SEARCH] ========================================');
-      
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      return res.send(rewrittenHTML);
-      
-    } catch (error) {
-      console.error('🔍 [SEARCH] ❌ Error:', error.message);
-      console.log('🔍 [SEARCH] ========================================');
-      
-      return res.status(500).send(`
-        <!DOCTYPE html>
-        <html><body>
-          <h1>🔍 検索エラー</h1>
-          <p>検索の処理中にエラーが発生しました。</p>
-          <p>エラー: ${error.message}</p>
-          <a href="/search">戻る</a>
-        </body></html>
-      `);
-      
-    } finally {
-      searchPageBusy = false;
-    }
-   }   
+      return html;
+    });
+    
+    const rewrittenHTML = rewriteHTML(htmlContent, `https://x.com/search?q=${encodeURIComponent(searchQuery)}&src=typed_query`);
+    
+    console.log('🔍 [SEARCH] ✅ Success! Returning HTML');
+    console.log('🔍 [SEARCH] ========================================');
+    
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    return res.send(rewrittenHTML);
+    
+  } catch (error) {
+    console.error('🔍 [SEARCH] ❌ Error:', error.message);
+    console.log('🔍 [SEARCH] ========================================');
+    
+    return res.status(500).send(`
+      <!DOCTYPE html>
+      <html><body>
+        <h1>🔍 検索エラー</h1>
+        <p>検索の処理中にエラーが発生しました。</p>
+        <p>エラー: ${error.message}</p>
+        <a href="/search">戻る</a>
+      </body></html>
+    `);
+    
+  } finally {
+    searchPageBusy = false;
+  }
+}   
   
   try {
     const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
