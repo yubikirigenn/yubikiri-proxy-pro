@@ -1,3 +1,4 @@
+
 // ===== 1. DEPENDENCIES =====
 const express = require('express');
 const cors = require('cors');
@@ -29,7 +30,6 @@ let xLoginPageBusy = false;
 const xLoginPageQueue = [];
 
 // ===== 🔴 CRITICAL: 検索専用ページの実装 =====
-// xLoginPageとは完全に独立した検索専用ページ
 let searchPage = null;
 let searchPageBusy = false;
 
@@ -71,7 +71,334 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// ... 残りのコードは同じ
+// ===== 5. UTILITY FUNCTIONS =====
+function encodeProxyUrl(targetUrl) {
+  return Buffer.from(targetUrl).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+function decodeProxyUrl(encoded) {
+  const base64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
+  return Buffer.from(base64, 'base64').toString('utf-8');
+}
+
+// 🔴 ここに1行だけ追加
+const PROXY_PATH = '/proxy/';
+
+// 🔴 以下の既存のrewriteHTML関数は触らない(そのまま)
+function rewriteHTML(html, baseUrl) {
+  var urlObj = new url.URL(baseUrl);
+  var origin = urlObj.protocol + '//' + urlObj.host;
+  var proxyOrigin = process.env.RENDER 
+    ? ('https://' + process.env.RENDER_EXTERNAL_HOSTNAME)
+    : ('http://localhost:' + PORT);
+
+  function isAlreadyProxied(urlString) {
+    return urlString.includes('/proxy/') || urlString.includes(proxyOrigin);
+  }
+
+  // href書き換え
+  html = html.replace(/href\s*=\s*["']([^"']+)["']/gi, function(match, href) {
+    if (href.startsWith('javascript:') || href.startsWith('#') || 
+        href.startsWith('mailto:') || href.startsWith('tel:') || 
+        isAlreadyProxied(href)) {
+      return match;
+    }
+    var absoluteUrl = href;
+    try {
+      if (href.startsWith('//')) {
+        absoluteUrl = urlObj.protocol + href;
+      } else if (href.startsWith('/')) {
+        absoluteUrl = origin + href;
+      } else if (!href.startsWith('http')) {
+        absoluteUrl = new url.URL(href, baseUrl).href;
+      }
+      return 'href="/proxy/' + encodeProxyUrl(absoluteUrl) + '"';
+    } catch (e) {
+      return match;
+    }
+  });
+
+  // src書き換え
+  html = html.replace(/src\s*=\s*["']([^"']+)["']/gi, function(match, src) {
+    if (src.startsWith('data:') || src.startsWith('blob:') || isAlreadyProxied(src)) {
+      return match;
+    }
+    var absoluteUrl = src;
+    try {
+      if (src.startsWith('//')) {
+        absoluteUrl = urlObj.protocol + src;
+      } else if (src.startsWith('/')) {
+        absoluteUrl = origin + src;
+      } else if (!src.startsWith('http')) {
+        absoluteUrl = new url.URL(src, baseUrl).href;
+      }
+      return 'src="/proxy/' + encodeProxyUrl(absoluteUrl) + '"';
+    } catch (e) {
+      return match;
+    }
+  });
+
+  // video source書き換え
+  html = html.replace(/<source\s+([^>]*?)src\s*=\s*["']([^"']+)["']([^>]*?)>/gi, function(match, before, src, after) {
+    if (src.startsWith('data:') || src.startsWith('blob:') || isAlreadyProxied(src)) {
+      return match;
+    }
+    var absoluteUrl = src;
+    try {
+      if (src.startsWith('//')) {
+        absoluteUrl = urlObj.protocol + src;
+      } else if (src.startsWith('/')) {
+        absoluteUrl = origin + src;
+      } else if (!src.startsWith('http')) {
+        absoluteUrl = new url.URL(src, baseUrl).href;
+      }
+      return '<source ' + before + 'src="/proxy/' + encodeProxyUrl(absoluteUrl) + '"' + after + '>';
+    } catch (e) {
+      return match;
+    }
+  });
+
+  // action書き換え
+  html = html.replace(/action\s*=\s*["']([^"']+)["']/gi, function(match, action) {
+    if (isAlreadyProxied(action)) {
+      return match;
+    }
+    var absoluteUrl = action;
+    try {
+      if (action.startsWith('//')) {
+        absoluteUrl = urlObj.protocol + action;
+      } else if (action.startsWith('/')) {
+        absoluteUrl = origin + action;
+      } else if (!action.startsWith('http')) {
+        absoluteUrl = new url.URL(action, baseUrl).href;
+      }
+      return 'action="/proxy/' + encodeProxyUrl(absoluteUrl) + '"';
+    } catch (e) {
+      return match;
+    }
+  });
+
+  // CSP, スクリプトを簡潔に
+  var cspMeta = '<meta http-equiv="Content-Security-Policy" content="connect-src * blob: data:; default-src * \'unsafe-inline\' \'unsafe-eval\' blob: data:; script-src * \'unsafe-inline\' \'unsafe-eval\' blob:;">';
+  
+  var earlyScript = `<script>
+(function(){
+  console.log("[Proxy] Starting enhanced intercept v4");
+  
+  var PROXY_ORIGIN="${proxyOrigin}";
+  var PROXY_PATH="${PROXY_PATH}";
+  
+  function encodeProxyUrl(u){
+    return PROXY_ORIGIN+PROXY_PATH+btoa(u).replace(/\\+/g,"-").replace(/\\//g,"_").replace(/=/g,"")
+  }
+  
+  function getCookieValue(name) {
+    const value = document.cookie.match('(^|;)\\\\s*' + name + '\\\\s*=\\\\s*([^;]+)');
+    return value ? value.pop() : '';
+  }
+  
+  console.log("[Proxy] Cookie check:");
+  console.log("  auth_token:", getCookieValue('auth_token') ? 'EXISTS' : 'MISSING');
+  console.log("  ct0:", getCookieValue('ct0') ? 'EXISTS' : 'MISSING');
+  console.log("  Total cookies:", document.cookie.split(';').length);
+  
+  // XHRインターセプト
+  var OrigXHR=window.XMLHttpRequest;
+  window.XMLHttpRequest=function(){
+    var xhr=new OrigXHR();
+    var origOpen=xhr.open;
+    var origSend=xhr.send;
+    var isProxied=false;
+    var isAsync=true;
+    var internalTimeout=0;
+    
+    xhr.open=function(m,u,a,us,p){
+      isAsync = (a === undefined || a === true);
+      
+      var shouldProxy = false;
+      var finalUrl = u;
+      
+     if (typeof u === "string") {
+  
+   var isSearchTimeline = u.includes('SearchTimeline') && u.includes('graphql');
+   var isFullXComUrl = u.startsWith("https://api.x.com") || 
+                     u.startsWith("https://x.com/i/") || 
+                     (u.startsWith("https://x.com") && u.includes("graphql"));
+  
+   var isRelativeApiPath = u.startsWith("/i/api/") || u.startsWith("/1.1/");
+   var isNotProxied = !u.includes(PROXY_ORIGIN) && !u.includes("/proxy/");
+  
+   shouldProxy = (isFullXComUrl || isRelativeApiPath) && isNotProxied;
+  
+   if (shouldProxy && isRelativeApiPath) {
+    finalUrl = "https://x.com" + u;
+    console.log("[Proxy] XHR relative->absolute:", u.substring(0,60));
+   }
+  
+  
+   if (isSearchTimeline) {
+    console.log("[Proxy] 🔍 SEARCH DETECTED in XHR!");
+    console.log("[Proxy] 🔍 Search URL:", finalUrl.substring(0,120));
+   }
+ }
+      
+      if(shouldProxy){
+        console.log("[Proxy] XHR Intercepted:",finalUrl.substring(0,80));
+        console.log("[Proxy] Async mode:", isAsync);
+        
+        const hasCookies = document.cookie.length > 0;
+        console.log("[Proxy] Has cookies:", hasCookies);
+        
+        var pu=encodeProxyUrl(finalUrl);
+        isProxied=true;
+        return origOpen.call(this,m,pu,a,us,p)
+      }
+      return origOpen.call(this,m,u,a,us,p)
+    };
+    
+    Object.defineProperty(xhr, 'timeout', {
+      get: function() {
+        return internalTimeout;
+      },
+      set: function(val) {
+        internalTimeout = val;
+        if (!isAsync) {
+          return;
+        }
+        try {
+          if (!isProxied) {
+            Object.getOwnPropertyDescriptor(OrigXHR.prototype, 'timeout').set.call(this, val);
+          }
+        } catch(e) {}
+      },
+      configurable: true
+    });
+    
+    xhr.send=function(){
+      if(isProxied && isAsync){
+        this.withCredentials=true;
+        console.log("[Proxy] XHR credentials enabled");
+      }
+      return origSend.apply(this,arguments)
+    };
+    
+    return xhr
+  };
+  
+  // Fetchインターセプト
+  var origFetch=window.fetch;
+  window.fetch=function(r,o){
+    var u=typeof r==="string"?r:(r.url||r);
+    
+    var shouldProxy = false;
+    var finalUrl = u;
+    
+    if (u) {
+  var isSearchTimeline = u.includes('SearchTimeline') && u.includes('graphql');
+  var isFullXComUrl = typeof u === "string" && 
+                     (u.startsWith("https://api.x.com") || 
+                      u.startsWith("https://x.com/i/") || 
+                      (u.startsWith("https://x.com") && u.includes("graphql")));
+  
+  var isRelativeApiPath = typeof u === "string" && 
+                         (u.startsWith("/i/api/") || u.startsWith("/1.1/"));
+  
+  var isNotProxied = !u.includes(PROXY_ORIGIN) && !u.includes("/proxy/");
+  
+  shouldProxy = (isFullXComUrl || isRelativeApiPath) && isNotProxied;
+  
+  if (shouldProxy && isRelativeApiPath) {
+    finalUrl = "https://x.com" + u;
+    console.log("[Proxy] Fetch relative->absolute:", u.substring(0,60));
+  }
+  
+  if (isSearchTimeline) {
+    console.log("[Proxy] 🔍 SEARCH DETECTED in Fetch!");
+    console.log("[Proxy] 🔍 Search URL:", finalUrl.substring(0,120));
+  }
+}
+    
+    if(shouldProxy){
+      console.log("[Proxy] Fetch intercepted:",finalUrl.substring(0,80));
+      
+      const hasCookies = document.cookie.length > 0;
+      console.log("[Proxy] Has cookies:", hasCookies);
+      
+      var pu=encodeProxyUrl(finalUrl);
+      var newOpts=Object.assign({},o||{});
+      
+      newOpts.credentials="include";
+      
+      if (!newOpts.headers) {
+        newOpts.headers = {};
+      }
+      
+      const ct0 = getCookieValue('ct0');
+      if (ct0 && !newOpts.headers['x-csrf-token']) {
+        newOpts.headers['x-csrf-token'] = ct0;
+        console.log("[Proxy] Added x-csrf-token");
+      }
+      
+      if(typeof r==="string"){
+        return origFetch(pu,newOpts)
+      }else{
+        var clonedHeaders=new Headers(r.headers||{});
+        
+        if (ct0 && !clonedHeaders.has('x-csrf-token')) {
+          clonedHeaders.set('x-csrf-token', ct0);
+        }
+        
+        var nr=new Request(pu,{
+          method:r.method||"GET",
+          headers:clonedHeaders,
+          body:r.body,
+          credentials:"include"
+        });
+        return origFetch(nr,newOpts)
+      }
+    }
+    return origFetch(r,o)
+  };
+  
+  console.log("[Proxy] Enhanced intercept OK");
+  
+  if ('serviceWorker' in navigator) {
+    console.log("[Proxy] Blocking Service Worker registration");
+    
+    navigator.serviceWorker.getRegistrations().then(function(registrations) {
+      for(let registration of registrations) {
+        registration.unregister();
+        console.log("[Proxy] Unregistered Service Worker");
+      }
+    });
+    
+    var origRegister = navigator.serviceWorker.register;
+    navigator.serviceWorker.register = function() {
+      console.log("[Proxy] Service Worker registration blocked");
+      return Promise.reject(new Error('Service Workers disabled by proxy'));
+    };
+  }
+})();
+</script>`;
+  
+  var mainScript = '<script>document.addEventListener("visibilitychange",function(){if(!document.hidden){console.log("[Proxy] Tab visible")}},true);</script>';
+
+  // <head>に注入
+  html = html.replace(/<head([^>]*)>/i, function(match, attrs) {
+    return '<head' + attrs + '>' + cspMeta + earlyScript + mainScript;
+  });
+  
+  // Google削除
+  html = html.replace(/<script[^>]*src=[^>]*google[^>]*>[\s\S]*?<\/script>/gi, '');
+  html = html.replace(/<iframe[^>]*google[^>]*>[\s\S]*?<\/iframe>/gi, '');
+
+  // charset確保
+  if (!html.includes('charset')) {
+    html = html.replace(/<head([^>]*)>/i, '<head$1><meta charset="UTF-8">');
+  }
+
+  return html;
+}
 
 // ===== 6. PUPPETEER FUNCTIONS =====
 async function loadPuppeteer() {
