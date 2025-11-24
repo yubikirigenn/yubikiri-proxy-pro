@@ -838,6 +838,47 @@ app.options('/i/api/*', (req, res) => {
 // 2️⃣ X.com API FALLBACK (最優先)
 app.all('/i/api/*', async (req, res) => {
   const isSearchTimeline = req.path.includes('SearchTimeline');
+
+  if (isSearchTimeline) {
+    console.log('🔍 [SEARCH] SearchTimeline detected - Currently disabled');
+    return res.status(503).send(`
+      <!DOCTYPE html>
+      <html lang="ja">
+      <head>
+        <meta charset="UTF-8">
+        <title>検索機能は準備中</title>
+        <style>
+          body {
+            font-family: sans-serif;
+            background: #15202b;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+          }
+          .message {
+            text-align: center;
+            padding: 40px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 16px;
+          }
+          h1 { font-size: 32px; margin-bottom: 20px; }
+          p { font-size: 16px; line-height: 1.6; color: rgba(255,255,255,0.7); }
+        </style>
+      </head>
+      <body>
+        <div class="message">
+          <h1>🔍 検索機能は準備中です</h1>
+          <p>現在、X.comの検索機能は技術的な制限により利用できません。</p>
+          <p>タイムライン表示機能は正常に動作しています。</p>
+          <p><a href="/home" style="color: #1da1f2;">ホームに戻る</a></p>
+        </div>
+      </body>
+      </html>
+    `);
+  }
   
   const targetUrl = `https://x.com${req.path}${req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : ''}`;
   
