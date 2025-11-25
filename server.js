@@ -788,21 +788,16 @@ app.get('/test-cookies', (req, res) => {
 // ===== 🔴 CRITICAL: SearchTimeline特別ハンドラー =====
 // 📍 この位置: OPTIONS routeの直後、通常のGET routeの前
 
-app.options(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
+// 🔴 すべてのOPTIONSリクエストを一括処理
+app.options('*', (req, res) => {
+  console.log('🔧 [OPTIONS] Preflight request:', req.path);
+  
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token, x-twitter-active-user, x-twitter-client-language, x-twitter-auth-type');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token, x-twitter-active-user, x-twitter-client-language, x-twitter-auth-type, Accept, Accept-Language, Accept-Encoding');
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Max-Age', '86400');
-  res.status(204).send();
-});
-
-app.options('/i/api/*', (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token, x-twitter-active-user, x-twitter-client-language, x-twitter-auth-type');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  res.setHeader('Access-Control-Max-Age', '86400');
+  
   res.status(204).send();
 });
 
@@ -1083,13 +1078,14 @@ app.all('/i/api/*', async (req, res) => {
 
 
 // 🔴 CRITICAL: GET proxy route with Puppeteer
+// GET proxy route with enhanced CORS support
 app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
   console.log('🔵 [PROXY] GET request received');
   
   try {
     const encodedUrl = req.params.encodedUrl + (req.params[0] || '');
     const targetUrl = decodeProxyUrl(encodedUrl);
-    console.log('🔡 GET Proxying:', targetUrl);
+    console.log('📡 GET Proxying:', targetUrl);
 
     const parsedUrl = new url.URL(targetUrl);
     const isXDomain = parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com');
@@ -1100,7 +1096,6 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
     
     const isMediaFile = parsedUrl.pathname.match(/\.(js|css|json|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|mp4|webm|m3u8|ts|m4s|mpd)$/i) ||
                         parsedUrl.hostname.includes('video.twimg.com') ||
-                        parsedUrl.hostname.includes('video-s.twimg.com') ||
                         parsedUrl.hostname.includes('pbs.twimg.com') ||
                         parsedUrl.hostname.includes('abs.twimg.com');
     
@@ -1144,15 +1139,17 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
           });
           
           const rewrittenHTML = rewriteHTML(htmlContent, targetUrl);
+          
+          // 🔴 CRITICAL: 正しいCORSヘッダーを設定
           res.setHeader('Content-Type', 'text/html; charset=utf-8');
           res.setHeader('Access-Control-Allow-Origin', '*');
+          res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+          res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+          res.setHeader('Access-Control-Allow-Credentials', 'true');
           
-          // 🔴 CRITICAL: Send cookies to browser
+          // X.comの場合のみCookieを送信
           if (isXDomain && hasCookies) {
             try {
-              console.log('🍪 [COOKIE] Sending cookies to browser...');
-              console.log('🍪 [COOKIE] Cookie count:', cachedXCookies.length);
-              
               const setCookieHeaders = cachedXCookies
                 .filter(c => c && c.name && c.value)
                 .map(c => {
@@ -1180,7 +1177,6 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
               
               if (setCookieHeaders.length > 0) {
                 res.setHeader('Set-Cookie', setCookieHeaders);
-                console.log('✅ [COOKIE] Set-Cookie header added:', setCookieHeaders.length, 'cookies');
               }
             } catch (e) {
               console.error('❌ [COOKIE] Failed:', e.message);
@@ -1207,112 +1203,47 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
               const validCookies = cachedXCookies.filter(c => c && c.name && c.value);
               if (validCookies.length > 0) {
                 await page.setCookie(...validCookies);
-                console.log('🍪 Cookies set for new page:', validCookies.length);
               }
             } catch (e) {
               console.log('⚠️ Could not set cookies:', e.message);
             }
           }
-        }
 
-        console.log(`🌐 Navigating to: ${targetUrl}`);
-        
-        if (isXDomain) {
-          try {
-            await page.goto(targetUrl, {
-              waitUntil: 'domcontentloaded',
-              timeout: 60000
-            });
-            console.log('✅ DOM loaded');
-          } catch (navErr) {
-            console.log('⚠️ Navigation timeout:', navErr.message);
-          }
+          await page.goto(targetUrl, {
+            waitUntil: 'domcontentloaded',
+            timeout: 60000
+          }).catch(err => {
+            console.log('⚠️ Navigation timeout:', err.message);
+          });
 
-          try {
-            await Promise.race([
-              page.waitForSelector('div[data-testid="primaryColumn"]', { timeout: 10000 }),
-              page.waitForSelector('main[role="main"]', { timeout: 10000 }),
-              new Promise(resolve => setTimeout(resolve, 10000))
-            ]);
-            console.log('✅ Main content detected');
-          } catch (e) {
-            console.log('⚠️ Main content not detected, continuing anyway');
-          }
-
-          await new Promise(resolve => setTimeout(resolve, 3000));
-        } else {
-          try {
-            await page.goto(targetUrl, {
-              waitUntil: 'networkidle2',
-              timeout: 30000
-            });
-          } catch (navErr) {
-            console.log('⚠️ Navigation timeout:', navErr.message);
-          }
-          
           await new Promise(resolve => setTimeout(resolve, 2000));
-        }
 
-        const htmlContent = await page.content();
-        console.log(`✅ Page loaded successfully (${htmlContent.length} bytes)`);
+          const htmlContent = await page.content();
+          console.log(`✅ Page loaded successfully (${htmlContent.length} bytes)`);
 
-        if (page && page !== xLoginPage) {
-          await page.close();
-        }
-
-        const rewrittenHTML = rewriteHTML(htmlContent, targetUrl);
-        res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        
-        // 🔴 CRITICAL: Send cookies to browser
-        if (isXDomain && hasCookies) {
-          try {
-            console.log('🍪 [COOKIE] Sending cookies to browser...');
-            console.log('🍪 [COOKIE] Cookie count:', cachedXCookies.length);
-            
-            const setCookieHeaders = cachedXCookies
-              .filter(c => c && c.name && c.value)
-              .map(c => {
-                const parts = [
-                  `${c.name}=${c.value}`,
-                  `Path=/`,
-                  `Max-Age=${60 * 60 * 24 * 365}`,
-                ];
-                
-                if (process.env.RENDER) {
-                  parts.push('Secure');
-                }
-                
-                if (c.name === 'ct0') {
-                  parts.push('SameSite=Lax');
-                } else {
-                  parts.push('SameSite=None');
-                  if (!process.env.RENDER) {
-                    parts.push('Secure');
-                  }
-                }
-                
-                return parts.join('; ');
-              });
-            
-            if (setCookieHeaders.length > 0) {
-              res.setHeader('Set-Cookie', setCookieHeaders);
-              console.log('✅ [COOKIE] Set-Cookie header added:', setCookieHeaders.length, 'cookies');
-            }
-          } catch (e) {
-            console.error('❌ [COOKIE] Failed:', e.message);
+          if (page) {
+            await page.close();
           }
+
+          const rewrittenHTML = rewriteHTML(htmlContent, targetUrl);
+          
+          // 🔴 CRITICAL: 正しいCORSヘッダーを設定
+          res.setHeader('Content-Type', 'text/html; charset=utf-8');
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+          res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+          res.setHeader('Access-Control-Allow-Credentials', 'true');
+          
+          res.send(rewrittenHTML);
         }
-        
-        res.send(rewrittenHTML);
 
       } catch (navError) {
         console.error('❌ Navigation error:', navError.message);
         
-        if (navError.message.includes('aborted') || navError.message.includes('ERR_ABORTED')) {
+        if (navError.message.includes('aborted')) {
           console.log('⚠️ Request aborted, returning 204');
           res.status(204).send();
-          if (!useXLoginPageShared && page) {
+          if (page && page !== xLoginPage) {
             await page.close().catch(() => {});
           }
           return;
@@ -1326,7 +1257,7 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
             <title>プロキシエラー</title>
             <style>
               body { 
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                font-family: sans-serif;
                 background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
                 color: #fff;
                 display: flex;
@@ -1345,12 +1276,6 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
               }
               h1 { color: #ff6b6b; margin-bottom: 20px; }
               p { color: rgba(255,255,255,0.7); line-height: 1.6; }
-              code { 
-                background: rgba(0,0,0,0.3);
-                padding: 2px 8px;
-                border-radius: 4px;
-                font-family: monospace;
-              }
               a {
                 display: inline-block;
                 margin-top: 20px;
@@ -1359,9 +1284,7 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
                 color: #1a1a1a;
                 text-decoration: none;
                 border-radius: 6px;
-                font-weight: 600;
               }
-              a:hover { background: #d0d0d0; }
             </style>
           </head>
           <body>
@@ -1380,127 +1303,82 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
         }
       }
     } else {
-  // 非HTMLリソース（JS/CSS/画像/API）はaxiosで取得
-  console.log('📦 Fetching non-HTML resource with axios');
-  
-  const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    'Accept': '*/*',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Referer': `${parsedUrl.protocol}//${parsedUrl.host}/`,
-    'Origin': `${parsedUrl.protocol}//${parsedUrl.host}`,
-    'Connection': 'keep-alive',
-  };
-
-  if (isXDomain && hasCookies) {
-    try {
-      // 🔴 Cookie文字列の生成を改善
-      const cookieString = cachedXCookies
-        .filter(c => c && c.name && c.value)
-        .map(c => `${c.name}=${c.value}`)
-        .join('; ');
+      // 非HTMLリソース(JS/CSS/画像/API)はaxiosで取得
+      console.log('📦 Fetching non-HTML resource with axios');
       
-      if (cookieString) {
-        headers['Cookie'] = cookieString;
-        console.log('🍪 Using cached cookies for resource');
-        console.log('🍪 Cookie names:', cachedXCookies.map(c => c.name).join(', '));
-        console.log('🍪 Cookie string length:', cookieString.length);
-      }
-      
-      if (isApiEndpoint) {
-        const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
-        if (ct0Cookie && ct0Cookie.value) {
-          headers['x-csrf-token'] = ct0Cookie.value;
-          console.log('🔐 Added CSRF token for API');
-        } else {
-          console.log('⚠️ ct0 cookie not found for API request');
-        }
-        
-        // 🔴 X API用の必須ヘッダーを追加
-        headers['x-twitter-active-user'] = 'yes';
-        headers['x-twitter-client-language'] = 'en';
-        headers['x-twitter-auth-type'] = 'OAuth2Session';
-        
-        // 🔴 verify_credentials などのエンドポイント用
-        if (targetUrl.includes('verify_credentials') || 
-            targetUrl.includes('account/') || 
-            targetUrl.includes('1.1/')) {
-          console.log('🔑 Adding legacy API headers');
-        }
-        
-        if (targetUrl.includes('SearchTimeline')) {
-          headers['Referer'] = 'https://x.com/search';
-        }
-        
-        if (targetUrl.includes('graphql')) {
-          headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
-          console.log('🔑 Added GraphQL bearer token');
-        }
-      }
-    } catch (e) {
-      console.log('⚠️ Cookie error:', e.message);
-    }
-  }
+      const headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Referer': `${parsedUrl.protocol}//${parsedUrl.host}/`,
+        'Origin': `${parsedUrl.protocol}//${parsedUrl.host}`,
+        'Connection': 'keep-alive',
+      };
 
-  // 🔴 デバッグ用：送信するヘッダーを詳細にログ出力
-  if (isApiEndpoint) {
-    console.log('📤 API Request headers:', {
-      hasCookie: !!headers['Cookie'],
-      hasCsrf: !!headers['x-csrf-token'],
-      hasAuth: !!headers['authorization'],
-      userAgent: headers['User-Agent'].substring(0, 50) + '...',
-    });
-  }
-
-  const response = await axios({
-    method: 'GET',
-    url: targetUrl,
-    headers: headers,
-    responseType: 'arraybuffer',
-    maxRedirects: 5,
-    validateStatus: () => true,
-    timeout: 15000
-  });
-
-  console.log(`📥 Resource loaded: ${response.status}`);
-  
-  if (response.status === 400 || response.status === 404) {
-    console.log('❌ Resource Error:', response.status, 'for', targetUrl);
-    
-    try {
-      const errorBody = response.data.toString('utf-8');
-      console.log('❌ Error body:', errorBody.substring(0, 200));
-      
-      if (errorBody.includes('"code":215') || errorBody.includes('Bad Authentication')) {
-        console.log('🚨 AUTHENTICATION ERROR - Cookies may be invalid');
-        
-        // 🔴 Cookie詳細をログ出力
-        console.log('🍪 Cookie details:');
-        if (hasCookies) {
-          cachedXCookies.forEach(c => {
-            if (c && c.name) {
-              console.log(`   ${c.name}: ${c.value ? 'EXISTS' : 'MISSING'} (${c.value ? c.value.length : 0} chars)`);
+      if (isXDomain && hasCookies) {
+        try {
+          const cookieString = cachedXCookies
+            .filter(c => c && c.name && c.value)
+            .map(c => `${c.name}=${c.value}`)
+            .join('; ');
+          
+          if (cookieString) {
+            headers['Cookie'] = cookieString;
+          }
+          
+          if (isApiEndpoint) {
+            const ct0Cookie = cachedXCookies.find(c => c && c.name === 'ct0');
+            if (ct0Cookie && ct0Cookie.value) {
+              headers['x-csrf-token'] = ct0Cookie.value;
             }
-          });
+            
+            headers['x-twitter-active-user'] = 'yes';
+            headers['x-twitter-client-language'] = 'en';
+            headers['x-twitter-auth-type'] = 'OAuth2Session';
+            
+            if (targetUrl.includes('graphql')) {
+              headers['authorization'] = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
+            }
+          }
+        } catch (e) {
+          console.log('⚠️ Cookie error:', e.message);
         }
       }
-    } catch (e) {
-      console.log('❌ Could not parse error body');
-    }
-  }
 
-  const contentType = response.headers['content-type'] || 'application/octet-stream';
-  res.setHeader('Content-Type', contentType);
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.send(response.data);
-}
+      const response = await axios({
+        method: 'GET',
+        url: targetUrl,
+        headers: headers,
+        responseType: 'arraybuffer',
+        maxRedirects: 5,
+        validateStatus: () => true,
+        timeout: 15000
+      });
+
+      console.log(`📥 Resource loaded: ${response.status}`);
+      
+      const contentType = response.headers['content-type'] || 'application/octet-stream';
+      
+      // 🔴 CRITICAL: 全てのリソースに正しいCORSヘッダーを設定
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      
+      // キャッシュヘッダーを追加(パフォーマンス向上)
+      if (isMediaFile) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000');
+      }
+      
+      res.send(response.data);
+    }
 
   } catch (error) {
     console.error('❌ GET Proxy error:', error.message);
     
-    if (error.message.includes('aborted') || error.message.includes('ERR_ABORTED')) {
-      console.log('⚠️ Request aborted, returning 204');
+    if (error.message.includes('aborted')) {
       res.status(204).send();
       return;
     }
