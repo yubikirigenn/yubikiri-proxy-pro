@@ -2341,6 +2341,191 @@ app.get('/x-login-test.html', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'x-login-test.html'));
 });
 
+app.get('/test-sites', (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>プロキシ動作テスト</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: #fff;
+      padding: 40px 20px;
+      min-height: 100vh;
+    }
+    .container { max-width: 1200px; margin: 0 auto; }
+    h1 {
+      font-size: 42px;
+      margin-bottom: 20px;
+      text-align: center;
+      text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+    }
+    .description {
+      text-align: center;
+      font-size: 18px;
+      margin-bottom: 40px;
+      opacity: 0.95;
+    }
+    .site-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 25px;
+      margin-top: 30px;
+    }
+    .site-card {
+      background: rgba(255,255,255,0.15);
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 16px;
+      padding: 30px;
+      backdrop-filter: blur(10px);
+      transition: all 0.3s;
+      cursor: pointer;
+    }
+    .site-card:hover {
+      transform: translateY(-5px);
+      background: rgba(255,255,255,0.2);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+    }
+    .site-card h2 {
+      font-size: 24px;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .site-card p {
+      font-size: 15px;
+      line-height: 1.6;
+      opacity: 0.9;
+      margin-bottom: 20px;
+    }
+    .difficulty {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 600;
+      margin-bottom: 15px;
+    }
+    .easy { background: rgba(76,175,80,0.3); border: 1px solid rgba(76,175,80,0.5); }
+    .medium { background: rgba(255,193,7,0.3); border: 1px solid rgba(255,193,7,0.5); }
+    .hard { background: rgba(244,67,54,0.3); border: 1px solid rgba(244,67,54,0.5); }
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 14px;
+      background: rgba(255,255,255,0.9);
+      color: #667eea;
+      text-decoration: none;
+      text-align: center;
+      border-radius: 10px;
+      font-weight: 600;
+      transition: all 0.3s;
+    }
+    .btn:hover {
+      background: #fff;
+      transform: scale(1.02);
+    }
+    .note {
+      background: rgba(255,255,255,0.1);
+      border-left: 4px solid rgba(255,255,255,0.5);
+      padding: 20px;
+      border-radius: 8px;
+      margin-top: 40px;
+      line-height: 1.8;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔍 Yubikiri Proxy Pro - 動作テスト</h1>
+    <p class="description">以下のサイトで、プロキシの動作を確認してください</p>
+
+    <div class="site-grid">
+      <div class="site-card">
+        <span class="difficulty easy">✅ 簡単</span>
+        <h2>📰 Example.com</h2>
+        <p>最もシンプルなテストページ。HTML/CSSのみ。</p>
+        <a href="#" class="btn" onclick="proxyTo('https://example.com'); return false;">テストする</a>
+      </div>
+
+      <div class="site-card">
+        <span class="difficulty easy">✅ 簡単</span>
+        <h2>🌐 Wikipedia (日本語)</h2>
+        <p>静的コンテンツ中心。画像とCSSの読み込みテスト。</p>
+        <a href="#" class="btn" onclick="proxyTo('https://ja.wikipedia.org'); return false;">テストする</a>
+      </div>
+
+      <div class="site-card">
+        <span class="difficulty medium">⚠️ 中級</span>
+        <h2>📺 YouTube</h2>
+        <p>動画プレイヤー。iframe、JavaScript、APIの複合テスト。</p>
+        <a href="#" class="btn" onclick="proxyTo('https://youtube.com'); return false;">テストする</a>
+      </div>
+
+      <div class="site-card">
+        <span class="difficulty medium">⚠️ 中級</span>
+        <h2>🎮 itch.io</h2>
+        <p>ゲーム配信サイト。画像、フォント、JavaScriptのテスト。</p>
+        <a href="#" class="btn" onclick="proxyTo('https://itch.io'); return false;">テストする</a>
+      </div>
+
+      <div class="site-card">
+        <span class="difficulty hard">🔴 高度</span>
+        <h2>🎨 Scratch</h2>
+        <p>複雑なWebアプリ。複数ドメイン、API多数。</p>
+        <a href="#" class="btn" onclick="proxyTo('https://scratch.mit.edu'); return false;">テストする</a>
+      </div>
+
+      <div class="site-card">
+        <span class="difficulty hard">🔴 高度</span>
+        <h2>⚡ TurboWarp</h2>
+        <p>Scratchの改良版。WebAssembly、WebGL使用。</p>
+        <a href="#" class="btn" onclick="proxyTo('https://turbowarp.org'); return false;">テストする</a>
+      </div>
+    </div>
+
+    <div class="note">
+      <h3 style="margin-bottom: 15px;">💡 テストのポイント</h3>
+      <p><strong>✅ 簡単レベル:</strong> 基本的なHTML/CSS/画像の表示ができればOK</p>
+      <p><strong>⚠️ 中級レベル:</strong> JavaScript、iframe、一部のAPIが動作すればOK</p>
+      <p><strong>🔴 高度レベル:</strong> 完全動作は困難。表示されるだけでも成功</p>
+    </div>
+  </div>
+
+  <script>
+    function proxyTo(url) {
+      fetch('/api/proxy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: url })
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          window.location.href = data.redirectUrl;
+        } else {
+          alert('エラー: ' + data.error);
+        }
+      })
+      .catch(err => {
+        alert('リクエストエラー: ' + err.message);
+      });
+    }
+  </script>
+</body>
+</html>`);
+});
+
+// ルートパス(最後に配置)
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
 // ルートパス（最後に配置）
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
