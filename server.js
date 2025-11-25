@@ -96,97 +96,121 @@ function rewriteHTML(html, baseUrl) {
     return urlString.includes('/proxy/') || urlString.includes(proxyOrigin);
   }
 
-  // href書き換え
+  function makeAbsoluteUrl(relativeUrl) {
+    try {
+      if (relativeUrl.startsWith('//')) {
+        return urlObj.protocol + relativeUrl;
+      } else if (relativeUrl.startsWith('/')) {
+        return origin + relativeUrl;
+      } else if (!relativeUrl.startsWith('http')) {
+        return new url.URL(relativeUrl, baseUrl).href;
+      }
+      return relativeUrl;
+    } catch (e) {
+      return relativeUrl;
+    }
+  }
+
+  function proxyUrl(originalUrl) {
+    if (!originalUrl || isAlreadyProxied(originalUrl)) {
+      return originalUrl;
+    }
+    var absoluteUrl = makeAbsoluteUrl(originalUrl);
+    return '/proxy/' + encodeProxyUrl(absoluteUrl);
+  }
+
+  // 1. href書き換え
   html = html.replace(/href\s*=\s*["']([^"']+)["']/gi, function(match, href) {
     if (href.startsWith('javascript:') || href.startsWith('#') || 
         href.startsWith('mailto:') || href.startsWith('tel:') || 
-        isAlreadyProxied(href)) {
+        href.startsWith('data:') || isAlreadyProxied(href)) {
       return match;
     }
-    var absoluteUrl = href;
-    try {
-      if (href.startsWith('//')) {
-        absoluteUrl = urlObj.protocol + href;
-      } else if (href.startsWith('/')) {
-        absoluteUrl = origin + href;
-      } else if (!href.startsWith('http')) {
-        absoluteUrl = new url.URL(href, baseUrl).href;
-      }
-      return 'href="/proxy/' + encodeProxyUrl(absoluteUrl) + '"';
-    } catch (e) {
-      return match;
-    }
+    return 'href="' + proxyUrl(href) + '"';
   });
 
-  // src書き換え
+  // 2. src書き換え
   html = html.replace(/src\s*=\s*["']([^"']+)["']/gi, function(match, src) {
     if (src.startsWith('data:') || src.startsWith('blob:') || isAlreadyProxied(src)) {
       return match;
     }
-    var absoluteUrl = src;
-    try {
-      if (src.startsWith('//')) {
-        absoluteUrl = urlObj.protocol + src;
-      } else if (src.startsWith('/')) {
-        absoluteUrl = origin + src;
-      } else if (!src.startsWith('http')) {
-        absoluteUrl = new url.URL(src, baseUrl).href;
-      }
-      return 'src="/proxy/' + encodeProxyUrl(absoluteUrl) + '"';
-    } catch (e) {
-      return match;
-    }
+    return 'src="' + proxyUrl(src) + '"';
   });
 
-  // video source書き換え
+  // 3. 🆕 iframe専用処理(srcdoc対応)
+  html = html.replace(/<iframe([^>]*)>/gi, function(match, attrs) {
+    // src属性は既に上で処理済み
+    // sandbox属性を調整
+    if (!attrs.includes('sandbox')) {
+      attrs += ' sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals"';
+    }
+    return '<iframe' + attrs + '>';
+  });
+
+  // 4. 🆕 video/audio source書き換え
   html = html.replace(/<source\s+([^>]*?)src\s*=\s*["']([^"']+)["']([^>]*?)>/gi, function(match, before, src, after) {
     if (src.startsWith('data:') || src.startsWith('blob:') || isAlreadyProxied(src)) {
       return match;
     }
-    var absoluteUrl = src;
-    try {
-      if (src.startsWith('//')) {
-        absoluteUrl = urlObj.protocol + src;
-      } else if (src.startsWith('/')) {
-        absoluteUrl = origin + src;
-      } else if (!src.startsWith('http')) {
-        absoluteUrl = new url.URL(src, baseUrl).href;
-      }
-      return '<source ' + before + 'src="/proxy/' + encodeProxyUrl(absoluteUrl) + '"' + after + '>';
-    } catch (e) {
-      return match;
-    }
+    return '<source ' + before + 'src="' + proxyUrl(src) + '"' + after + '>';
   });
 
-  // action書き換え
+  // 5. action書き換え
   html = html.replace(/action\s*=\s*["']([^"']+)["']/gi, function(match, action) {
     if (isAlreadyProxied(action)) {
       return match;
     }
-    var absoluteUrl = action;
-    try {
-      if (action.startsWith('//')) {
-        absoluteUrl = urlObj.protocol + action;
-      } else if (action.startsWith('/')) {
-        absoluteUrl = origin + action;
-      } else if (!action.startsWith('http')) {
-        absoluteUrl = new url.URL(action, baseUrl).href;
-      }
-      return 'action="/proxy/' + encodeProxyUrl(absoluteUrl) + '"';
-    } catch (e) {
-      return match;
-    }
+    return 'action="' + proxyUrl(action) + '"';
   });
 
-  // CSP, スクリプトを簡潔に
-  var cspMeta = '<meta http-equiv="Content-Security-Policy" content="connect-src * blob: data:; default-src * \'unsafe-inline\' \'unsafe-eval\' blob: data:; script-src * \'unsafe-inline\' \'unsafe-eval\' blob:;">';
+  // 6. 🆕 CSS内のurl()を書き換え
+  html = html.replace(/url\s*\(\s*["']?([^"')]+)["']?\s*\)/gi, function(match, cssUrl) {
+    if (cssUrl.startsWith('data:') || cssUrl.startsWith('blob:') || 
+        cssUrl.startsWith('#') || isAlreadyProxied(cssUrl)) {
+      return match;
+    }
+    return 'url("' + proxyUrl(cssUrl) + '")';
+  });
+
+  // 7. 🆕 srcset属性の書き換え
+  html = html.replace(/srcset\s*=\s*["']([^"']+)["']/gi, function(match, srcset) {
+    var rewritten = srcset.split(',').map(function(src) {
+      var parts = src.trim().split(/\s+/);
+      if (parts[0] && !isAlreadyProxied(parts[0])) {
+        parts[0] = proxyUrl(parts[0]);
+      }
+      return parts.join(' ');
+    }).join(', ');
+    return 'srcset="' + rewritten + '"';
+  });
+
+  // 8. 🆕 poster属性(video)
+  html = html.replace(/poster\s*=\s*["']([^"']+)["']/gi, function(match, poster) {
+    if (isAlreadyProxied(poster)) {
+      return match;
+    }
+    return 'poster="' + proxyUrl(poster) + '"';
+  });
+
+  // 9. 🆕 data属性(object)
+  html = html.replace(/data\s*=\s*["']([^"']+)["']/gi, function(match, data) {
+    if (data.startsWith('data:') || isAlreadyProxied(data)) {
+      return match;
+    }
+    return 'data="' + proxyUrl(data) + '"';
+  });
+
+  // 10. CSP設定
+  var cspMeta = '<meta http-equiv="Content-Security-Policy" content="connect-src * blob: data: ws: wss:; default-src * \'unsafe-inline\' \'unsafe-eval\' blob: data:; script-src * \'unsafe-inline\' \'unsafe-eval\' blob:; frame-src * blob: data:;">';
   
+  // 11. 🆕 WebSocket書き換えスクリプト(強化版)
   var earlyScript = `<script>
 (function(){
-  console.log("[Proxy] Starting enhanced intercept v4");
+  console.log("[Proxy] Enhanced intercept v5 - WebSocket support");
   
   var PROXY_ORIGIN="${proxyOrigin}";
   var PROXY_PATH="${PROXY_PATH}";
+  var BASE_ORIGIN="${origin}";
   
   function encodeProxyUrl(u){
     return PROXY_ORIGIN+PROXY_PATH+btoa(u).replace(/\\+/g,"-").replace(/\\//g,"_").replace(/=/g,"")
@@ -197,10 +221,26 @@ function rewriteHTML(html, baseUrl) {
     return value ? value.pop() : '';
   }
   
-  console.log("[Proxy] Cookie check:");
-  console.log("  auth_token:", getCookieValue('auth_token') ? 'EXISTS' : 'MISSING');
-  console.log("  ct0:", getCookieValue('ct0') ? 'EXISTS' : 'MISSING');
-  console.log("  Total cookies:", document.cookie.split(';').length);
+  // 🆕 WebSocket プロキシ
+  var OrigWebSocket = window.WebSocket;
+  window.WebSocket = function(url, protocols) {
+    console.log("[Proxy] WebSocket intercepted:", url);
+    
+    // 相対URLを絶対URLに変換
+    var absoluteUrl = url;
+    if (url.startsWith('ws://') || url.startsWith('wss://')) {
+      // すでに絶対URL
+    } else if (url.startsWith('/')) {
+      var wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      absoluteUrl = wsProto + '//' + BASE_ORIGIN.replace(/^https?:\\/\\//, '') + url;
+    }
+    
+    console.log("[Proxy] WebSocket absolute URL:", absoluteUrl);
+    
+    // 注意: WebSocketはプロキシできないため、そのまま接続
+    // 将来的な改善: WebSocket用のプロキシサーバーを実装
+    return new OrigWebSocket(absoluteUrl, protocols);
+  };
   
   // XHRインターセプト
   var OrigXHR=window.XMLHttpRequest;
@@ -210,7 +250,6 @@ function rewriteHTML(html, baseUrl) {
     var origSend=xhr.send;
     var isProxied=false;
     var isAsync=true;
-    var internalTimeout=0;
     
     xhr.open=function(m,u,a,us,p){
       isAsync = (a === undefined || a === true);
@@ -218,37 +257,21 @@ function rewriteHTML(html, baseUrl) {
       var shouldProxy = false;
       var finalUrl = u;
       
-     if (typeof u === "string") {
-  
-   var isSearchTimeline = u.includes('SearchTimeline') && u.includes('graphql');
-   var isFullXComUrl = u.startsWith("https://api.x.com") || 
-                     u.startsWith("https://x.com/i/") || 
-                     (u.startsWith("https://x.com") && u.includes("graphql"));
-  
-   var isRelativeApiPath = u.startsWith("/i/api/") || u.startsWith("/1.1/");
-   var isNotProxied = !u.includes(PROXY_ORIGIN) && !u.includes("/proxy/");
-  
-   shouldProxy = (isFullXComUrl || isRelativeApiPath) && isNotProxied;
-  
-   if (shouldProxy && isRelativeApiPath) {
-    finalUrl = "https://x.com" + u;
-    console.log("[Proxy] XHR relative->absolute:", u.substring(0,60));
-   }
-  
-  
-   if (isSearchTimeline) {
-    console.log("[Proxy] 🔍 SEARCH DETECTED in XHR!");
-    console.log("[Proxy] 🔍 Search URL:", finalUrl.substring(0,120));
-   }
- }
+      if (typeof u === "string") {
+        var isFullUrl = u.startsWith("http://") || u.startsWith("https://");
+        var isRelativePath = u.startsWith("/");
+        var isNotProxied = !u.includes(PROXY_ORIGIN) && !u.includes("/proxy/");
+        
+        shouldProxy = (isFullUrl || isRelativePath) && isNotProxied;
+        
+        if (shouldProxy && isRelativePath) {
+          finalUrl = BASE_ORIGIN + u;
+          console.log("[Proxy] XHR relative->absolute:", u.substring(0,60));
+        }
+      }
       
       if(shouldProxy){
         console.log("[Proxy] XHR Intercepted:",finalUrl.substring(0,80));
-        console.log("[Proxy] Async mode:", isAsync);
-        
-        const hasCookies = document.cookie.length > 0;
-        console.log("[Proxy] Has cookies:", hasCookies);
-        
         var pu=encodeProxyUrl(finalUrl);
         isProxied=true;
         return origOpen.call(this,m,pu,a,us,p)
@@ -256,28 +279,9 @@ function rewriteHTML(html, baseUrl) {
       return origOpen.call(this,m,u,a,us,p)
     };
     
-    Object.defineProperty(xhr, 'timeout', {
-      get: function() {
-        return internalTimeout;
-      },
-      set: function(val) {
-        internalTimeout = val;
-        if (!isAsync) {
-          return;
-        }
-        try {
-          if (!isProxied) {
-            Object.getOwnPropertyDescriptor(OrigXHR.prototype, 'timeout').set.call(this, val);
-          }
-        } catch(e) {}
-      },
-      configurable: true
-    });
-    
     xhr.send=function(){
       if(isProxied && isAsync){
         this.withCredentials=true;
-        console.log("[Proxy] XHR credentials enabled");
       }
       return origSend.apply(this,arguments)
     };
@@ -294,63 +298,31 @@ function rewriteHTML(html, baseUrl) {
     var finalUrl = u;
     
     if (u) {
-  var isSearchTimeline = u.includes('SearchTimeline') && u.includes('graphql');
-  var isFullXComUrl = typeof u === "string" && 
-                     (u.startsWith("https://api.x.com") || 
-                      u.startsWith("https://x.com/i/") || 
-                      (u.startsWith("https://x.com") && u.includes("graphql")));
-  
-  var isRelativeApiPath = typeof u === "string" && 
-                         (u.startsWith("/i/api/") || u.startsWith("/1.1/"));
-  
-  var isNotProxied = !u.includes(PROXY_ORIGIN) && !u.includes("/proxy/");
-  
-  shouldProxy = (isFullXComUrl || isRelativeApiPath) && isNotProxied;
-  
-  if (shouldProxy && isRelativeApiPath) {
-    finalUrl = "https://x.com" + u;
-    console.log("[Proxy] Fetch relative->absolute:", u.substring(0,60));
-  }
-  
-  if (isSearchTimeline) {
-    console.log("[Proxy] 🔍 SEARCH DETECTED in Fetch!");
-    console.log("[Proxy] 🔍 Search URL:", finalUrl.substring(0,120));
-  }
-}
+      var isFullUrl = typeof u === "string" && 
+                     (u.startsWith("http://") || u.startsWith("https://"));
+      var isRelativePath = typeof u === "string" && u.startsWith("/");
+      var isNotProxied = !u.includes(PROXY_ORIGIN) && !u.includes("/proxy/");
+      
+      shouldProxy = (isFullUrl || isRelativePath) && isNotProxied;
+      
+      if (shouldProxy && isRelativePath) {
+        finalUrl = BASE_ORIGIN + u;
+        console.log("[Proxy] Fetch relative->absolute:", u.substring(0,60));
+      }
+    }
     
     if(shouldProxy){
       console.log("[Proxy] Fetch intercepted:",finalUrl.substring(0,80));
-      
-      const hasCookies = document.cookie.length > 0;
-      console.log("[Proxy] Has cookies:", hasCookies);
-      
       var pu=encodeProxyUrl(finalUrl);
       var newOpts=Object.assign({},o||{});
-      
       newOpts.credentials="include";
-      
-      if (!newOpts.headers) {
-        newOpts.headers = {};
-      }
-      
-      const ct0 = getCookieValue('ct0');
-      if (ct0 && !newOpts.headers['x-csrf-token']) {
-        newOpts.headers['x-csrf-token'] = ct0;
-        console.log("[Proxy] Added x-csrf-token");
-      }
       
       if(typeof r==="string"){
         return origFetch(pu,newOpts)
       }else{
-        var clonedHeaders=new Headers(r.headers||{});
-        
-        if (ct0 && !clonedHeaders.has('x-csrf-token')) {
-          clonedHeaders.set('x-csrf-token', ct0);
-        }
-        
         var nr=new Request(pu,{
           method:r.method||"GET",
-          headers:clonedHeaders,
+          headers:r.headers,
           body:r.body,
           credentials:"include"
         });
@@ -360,28 +332,24 @@ function rewriteHTML(html, baseUrl) {
     return origFetch(r,o)
   };
   
-  console.log("[Proxy] Enhanced intercept OK");
-  
+  // Service Worker無効化
   if ('serviceWorker' in navigator) {
-    console.log("[Proxy] Blocking Service Worker registration");
-    
     navigator.serviceWorker.getRegistrations().then(function(registrations) {
       for(let registration of registrations) {
         registration.unregister();
-        console.log("[Proxy] Unregistered Service Worker");
       }
     });
     
-    var origRegister = navigator.serviceWorker.register;
     navigator.serviceWorker.register = function() {
-      console.log("[Proxy] Service Worker registration blocked");
       return Promise.reject(new Error('Service Workers disabled by proxy'));
     };
   }
+  
+  console.log("[Proxy] Enhanced intercept initialized");
 })();
 </script>`;
   
-  var mainScript = '<script>document.addEventListener("visibilitychange",function(){if(!document.hidden){console.log("[Proxy] Tab visible")}},true);</script>';
+  var mainScript = '<script>console.log("[Proxy] Scripts loaded");</script>';
 
   // <head>に注入
   html = html.replace(/<head([^>]*)>/i, function(match, attrs) {
@@ -396,6 +364,9 @@ function rewriteHTML(html, baseUrl) {
   if (!html.includes('charset')) {
     html = html.replace(/<head([^>]*)>/i, '<head$1><meta charset="UTF-8">');
   }
+  
+  // 🆕 base タグを削除(相対パス解決の競合を防ぐ)
+  html = html.replace(/<base[^>]*>/gi, '');
 
   return html;
 }
