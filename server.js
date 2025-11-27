@@ -1077,7 +1077,7 @@ app.all('/i/api/*', async (req, res) => {
 });
 
 
-// ===== GET PROXY ROUTE - 修正版 (Content-Type判定改善) =====
+// ===== GET PROXY ROUTE - Wikipedia完全対応版 =====
 
 app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
   console.log('🔵 [PROXY] GET request received');
@@ -1090,18 +1090,24 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
     const parsedUrl = new url.URL(targetUrl);
     const isXDomain = parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com');
     
-    // ✅ 修正: より正確なリソースタイプ判定
+    // ✅ 修正: APIエンドポイントの判定
     const isApiEndpoint = parsedUrl.hostname.includes('api.x.com') || 
                           parsedUrl.pathname.includes('.json') ||
                           parsedUrl.pathname.includes('graphql');
     
-    // ✅ 修正: 拡張子ベースの正確な判定
+    // ✅ 拡張子の抽出
     const fileExtension = parsedUrl.pathname.match(/\.([^./?#]+)(?:[?#]|$)/);
     const ext = fileExtension ? fileExtension[1].toLowerCase() : null;
     
-    // リソースタイプ別判定
-    const isJavaScript = ext === 'js' || parsedUrl.pathname.includes('/load.php'); // Wikipedia特有
-    const isStylesheet = ext === 'css';
+    // ✅ リソースタイプ別判定
+    // Wikipedia専用: load.php?modules=...はJavaScript/CSS
+    const isWikipediaResource = parsedUrl.hostname.includes('wikipedia.org') && 
+                                 parsedUrl.pathname.includes('/load.php');
+    
+    const isJavaScript = ext === 'js' || 
+                         (isWikipediaResource && parsedUrl.search.includes('only=scripts'));
+    const isStylesheet = ext === 'css' || 
+                         (isWikipediaResource && parsedUrl.search.includes('only=styles'));
     const isImage = ext && ['png', 'jpg', 'jpeg', 'gif', 'svg', 'ico', 'webp', 'avif'].includes(ext);
     const isFont = ext && ['woff', 'woff2', 'ttf', 'eot', 'otf'].includes(ext);
     const isVideo = ext && ['mp4', 'webm', 'm3u8', 'ts', 'm4s', 'mpd'].includes(ext);
@@ -1118,18 +1124,21 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
                                isFont || isVideo || isJson || 
                                isApiEndpoint || isMediaDomain;
     
-    // ✅ HTML = 非HTMLリソースではない、かつ拡張子がない or .html/.htm
-    const isHTML = !isNonHTMLResource && (!ext || ext === 'html' || ext === 'htm' || ext === 'php');
+    // ✅ HTML = 非HTMLリソースではない、かつ拡張子がない or .html/.htm/.php
+    const isHTML = !isNonHTMLResource && 
+                   (!ext || ext === 'html' || ext === 'htm' || ext === 'php');
     
     console.log(`📊 Type Detection:`);
-    console.log(`   URL: ${targetUrl.substring(0, 80)}`);
+    console.log(`   URL: ${targetUrl.substring(0, 100)}`);
     console.log(`   Extension: ${ext || 'none'}`);
+    console.log(`   Query: ${parsedUrl.search.substring(0, 50)}`);
+    console.log(`   isWikipediaResource: ${isWikipediaResource || false}`);
     console.log(`   isHTML=${isHTML}, isJS=${isJavaScript}, isCSS=${isStylesheet}`);
     console.log(`   isAPI=${isApiEndpoint}, isMedia=${isMediaDomain}`);
     
     const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
 
-    // HTMLページの場合はPuppeteerを使用
+    // ===== HTMLページの場合はPuppeteerを使用 =====
     if (isHTML) {
       console.log('🌐 Using Puppeteer for HTML page');
       
@@ -1165,7 +1174,6 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
           
           const rewrittenHTML = rewriteHTML(htmlContent, targetUrl);
           
-          // 🔴 CRITICAL: 正しいCORSヘッダーを設定
           res.setHeader('Content-Type', 'text/html; charset=utf-8');
           res.setHeader('Access-Control-Allow-Origin', '*');
           res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -1252,7 +1260,6 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
 
           const rewrittenHTML = rewriteHTML(htmlContent, targetUrl);
           
-          // 🔴 CRITICAL: 正しいCORSヘッダーを設定
           res.setHeader('Content-Type', 'text/html; charset=utf-8');
           res.setHeader('Access-Control-Allow-Origin', '*');
           res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -1327,8 +1334,9 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
           await page.close().catch(() => {});
         }
       }
+      
+    // ===== 非HTMLリソースはaxiosで取得 =====
     } else {
-      // ✅ 非HTMLリソース(JS/CSS/画像/API)はaxiosで取得
       console.log('📦 Fetching non-HTML resource with axios');
       console.log(`   Type: ${isJavaScript ? 'JS' : isStylesheet ? 'CSS' : isImage ? 'Image' : isVideo ? 'Video' : 'Other'}`);
       
@@ -1342,6 +1350,7 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
         'Connection': 'keep-alive',
       };
 
+      // X.com専用のCookie処理
       if (isXDomain && hasCookies) {
         try {
           const cookieString = cachedXCookies
@@ -1386,11 +1395,9 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
       
       // ✅ Content-Typeを正確に処理
       const contentType = response.headers['content-type'] || 'application/octet-stream';
-      
-      // ✅ CRITICAL: Content-Typeを正しく設定
       let finalContentType = contentType;
       
-      // 拡張子ベースでMIMEタイプを補正
+      // ✅ 拡張子ベースでMIMEタイプを補正
       if (isJavaScript && !contentType.includes('javascript')) {
         finalContentType = 'application/javascript; charset=utf-8';
         console.log('   ⚠️ Corrected Content-Type to JavaScript');
@@ -1402,18 +1409,18 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
         console.log('   ⚠️ Corrected Content-Type to JSON');
       }
       
-      console.log(`   Content-Type: ${finalContentType}`);
+      console.log(`   Final Content-Type: ${finalContentType}`);
       
-      // 🔴 CRITICAL: 全てのリソースに正しいCORSヘッダーを設定
+      // ✅ 正しいヘッダーを設定
       res.setHeader('Content-Type', finalContentType);
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
       res.setHeader('Access-Control-Allow-Credentials', 'true');
       
-      // キャッシュヘッダーを追加 (パフォーマンス向上)
+      // キャッシュヘッダー（パフォーマンス向上）
       if (isImage || isFont || isStylesheet || isJavaScript) {
-        res.setHeader('Cache-Control', 'public, max-age=31536000'); // 1年
+        res.setHeader('Cache-Control', 'public, max-age=31536000');
       }
       
       res.send(response.data);
