@@ -1077,8 +1077,8 @@ app.all('/i/api/*', async (req, res) => {
 });
 
 
-// 🔴 CRITICAL: GET proxy route with Puppeteer
-// GET proxy route with enhanced CORS support
+// ===== GET PROXY ROUTE - 修正版 (Content-Type判定改善) =====
+
 app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
   console.log('🔵 [PROXY] GET request received');
   
@@ -1090,17 +1090,42 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
     const parsedUrl = new url.URL(targetUrl);
     const isXDomain = parsedUrl.hostname.includes('x.com') || parsedUrl.hostname.includes('twitter.com');
     
+    // ✅ 修正: より正確なリソースタイプ判定
     const isApiEndpoint = parsedUrl.hostname.includes('api.x.com') || 
                           parsedUrl.pathname.includes('.json') ||
                           parsedUrl.pathname.includes('graphql');
     
-    const isMediaFile = parsedUrl.pathname.match(/\.(js|css|json|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|mp4|webm|m3u8|ts|m4s|mpd)$/i) ||
-                        parsedUrl.hostname.includes('video.twimg.com') ||
-                        parsedUrl.hostname.includes('pbs.twimg.com') ||
-                        parsedUrl.hostname.includes('abs.twimg.com');
+    // ✅ 修正: 拡張子ベースの正確な判定
+    const fileExtension = parsedUrl.pathname.match(/\.([^./?#]+)(?:[?#]|$)/);
+    const ext = fileExtension ? fileExtension[1].toLowerCase() : null;
     
-    const isHTML = !isApiEndpoint && !isMediaFile;
-    console.log(`📊 Type: isHTML=${isHTML}, isAPI=${isApiEndpoint}, isMedia=${isMediaFile}`);
+    // リソースタイプ別判定
+    const isJavaScript = ext === 'js' || parsedUrl.pathname.includes('/load.php'); // Wikipedia特有
+    const isStylesheet = ext === 'css';
+    const isImage = ext && ['png', 'jpg', 'jpeg', 'gif', 'svg', 'ico', 'webp', 'avif'].includes(ext);
+    const isFont = ext && ['woff', 'woff2', 'ttf', 'eot', 'otf'].includes(ext);
+    const isVideo = ext && ['mp4', 'webm', 'm3u8', 'ts', 'm4s', 'mpd'].includes(ext);
+    const isJson = ext === 'json';
+    
+    // 特定ドメインの判定
+    const isMediaDomain = parsedUrl.hostname.includes('video.twimg.com') ||
+                          parsedUrl.hostname.includes('pbs.twimg.com') ||
+                          parsedUrl.hostname.includes('abs.twimg.com') ||
+                          parsedUrl.hostname.includes('upload.wikimedia.org');
+    
+    // ✅ 非HTMLリソース = 上記のいずれか
+    const isNonHTMLResource = isJavaScript || isStylesheet || isImage || 
+                               isFont || isVideo || isJson || 
+                               isApiEndpoint || isMediaDomain;
+    
+    // ✅ HTML = 非HTMLリソースではない、かつ拡張子がない or .html/.htm
+    const isHTML = !isNonHTMLResource && (!ext || ext === 'html' || ext === 'htm' || ext === 'php');
+    
+    console.log(`📊 Type Detection:`);
+    console.log(`   URL: ${targetUrl.substring(0, 80)}`);
+    console.log(`   Extension: ${ext || 'none'}`);
+    console.log(`   isHTML=${isHTML}, isJS=${isJavaScript}, isCSS=${isStylesheet}`);
+    console.log(`   isAPI=${isApiEndpoint}, isMedia=${isMediaDomain}`);
     
     const hasCookies = cachedXCookies && Array.isArray(cachedXCookies) && cachedXCookies.length > 0;
 
@@ -1303,8 +1328,9 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
         }
       }
     } else {
-      // 非HTMLリソース(JS/CSS/画像/API)はaxiosで取得
+      // ✅ 非HTMLリソース(JS/CSS/画像/API)はaxiosで取得
       console.log('📦 Fetching non-HTML resource with axios');
+      console.log(`   Type: ${isJavaScript ? 'JS' : isStylesheet ? 'CSS' : isImage ? 'Image' : isVideo ? 'Video' : 'Other'}`);
       
       const headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -1358,18 +1384,36 @@ app.get(`${PROXY_PATH}:encodedUrl*`, async (req, res) => {
 
       console.log(`📥 Resource loaded: ${response.status}`);
       
+      // ✅ Content-Typeを正確に処理
       const contentType = response.headers['content-type'] || 'application/octet-stream';
       
+      // ✅ CRITICAL: Content-Typeを正しく設定
+      let finalContentType = contentType;
+      
+      // 拡張子ベースでMIMEタイプを補正
+      if (isJavaScript && !contentType.includes('javascript')) {
+        finalContentType = 'application/javascript; charset=utf-8';
+        console.log('   ⚠️ Corrected Content-Type to JavaScript');
+      } else if (isStylesheet && !contentType.includes('css')) {
+        finalContentType = 'text/css; charset=utf-8';
+        console.log('   ⚠️ Corrected Content-Type to CSS');
+      } else if (isJson && !contentType.includes('json')) {
+        finalContentType = 'application/json; charset=utf-8';
+        console.log('   ⚠️ Corrected Content-Type to JSON');
+      }
+      
+      console.log(`   Content-Type: ${finalContentType}`);
+      
       // 🔴 CRITICAL: 全てのリソースに正しいCORSヘッダーを設定
-      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Type', finalContentType);
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
       res.setHeader('Access-Control-Allow-Credentials', 'true');
       
-      // キャッシュヘッダーを追加(パフォーマンス向上)
-      if (isMediaFile) {
-        res.setHeader('Cache-Control', 'public, max-age=31536000');
+      // キャッシュヘッダーを追加 (パフォーマンス向上)
+      if (isImage || isFont || isStylesheet || isJavaScript) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000'); // 1年
       }
       
       res.send(response.data);
