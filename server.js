@@ -116,6 +116,17 @@ function rewriteHTML(html, baseUrl) {
       return originalUrl;
     }
     var absoluteUrl = makeAbsoluteUrl(originalUrl);
+    
+    // 🎮 Scratch API の書き換え
+    if (absoluteUrl.includes('api.scratch.mit.edu')) {
+      return absoluteUrl.replace('https://api.scratch.mit.edu', '/api/scratch');
+    }
+    
+    // 🚀 TurboWarp Extensions の書き換え
+    if (absoluteUrl.includes('extensions.turbowarp.org')) {
+      return absoluteUrl.replace('https://extensions.turbowarp.org', '/cdn/turbowarp');
+    }
+    
     return '/proxy/' + encodeProxyUrl(absoluteUrl);
   }
 
@@ -137,17 +148,15 @@ function rewriteHTML(html, baseUrl) {
     return 'src="' + proxyUrl(src) + '"';
   });
 
-  // 3. 🆕 iframe専用処理(srcdoc対応)
+  // 3. iframe専用処理
   html = html.replace(/<iframe([^>]*)>/gi, function(match, attrs) {
-    // src属性は既に上で処理済み
-    // sandbox属性を調整
     if (!attrs.includes('sandbox')) {
       attrs += ' sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals"';
     }
     return '<iframe' + attrs + '>';
   });
 
-  // 4. 🆕 video/audio source書き換え
+  // 4. video/audio source書き換え
   html = html.replace(/<source\s+([^>]*?)src\s*=\s*["']([^"']+)["']([^>]*?)>/gi, function(match, before, src, after) {
     if (src.startsWith('data:') || src.startsWith('blob:') || isAlreadyProxied(src)) {
       return match;
@@ -163,7 +172,7 @@ function rewriteHTML(html, baseUrl) {
     return 'action="' + proxyUrl(action) + '"';
   });
 
-  // 6. 🆕 CSS内のurl()を書き換え
+  // 6. CSS内のurl()を書き換え
   html = html.replace(/url\s*\(\s*["']?([^"')]+)["']?\s*\)/gi, function(match, cssUrl) {
     if (cssUrl.startsWith('data:') || cssUrl.startsWith('blob:') || 
         cssUrl.startsWith('#') || isAlreadyProxied(cssUrl)) {
@@ -172,7 +181,7 @@ function rewriteHTML(html, baseUrl) {
     return 'url("' + proxyUrl(cssUrl) + '")';
   });
 
-  // 7. 🆕 srcset属性の書き換え
+  // 7. srcset属性の書き換え
   html = html.replace(/srcset\s*=\s*["']([^"']+)["']/gi, function(match, srcset) {
     var rewritten = srcset.split(',').map(function(src) {
       var parts = src.trim().split(/\s+/);
@@ -184,7 +193,7 @@ function rewriteHTML(html, baseUrl) {
     return 'srcset="' + rewritten + '"';
   });
 
-  // 8. 🆕 poster属性(video)
+  // 8. poster属性(video)
   html = html.replace(/poster\s*=\s*["']([^"']+)["']/gi, function(match, poster) {
     if (isAlreadyProxied(poster)) {
       return match;
@@ -192,7 +201,7 @@ function rewriteHTML(html, baseUrl) {
     return 'poster="' + proxyUrl(poster) + '"';
   });
 
-  // 9. 🆕 data属性(object)
+  // 9. data属性(object)
   html = html.replace(/data\s*=\s*["']([^"']+)["']/gi, function(match, data) {
     if (data.startsWith('data:') || isAlreadyProxied(data)) {
       return match;
@@ -203,10 +212,10 @@ function rewriteHTML(html, baseUrl) {
   // 10. CSP設定
   var cspMeta = '<meta http-equiv="Content-Security-Policy" content="connect-src * blob: data: ws: wss:; default-src * \'unsafe-inline\' \'unsafe-eval\' blob: data:; script-src * \'unsafe-inline\' \'unsafe-eval\' blob:; frame-src * blob: data:;">';
   
-  // 11. 🆕 WebSocket書き換えスクリプト(強化版)
+  // 11. ✅ インターセプトスクリプト（同期XHR対応版）
   var earlyScript = `<script>
 (function(){
-  console.log("[Proxy] Enhanced intercept v5 - WebSocket support");
+  console.log("[Proxy] Enhanced intercept v6 - Sync XHR fix");
   
   var PROXY_ORIGIN="${proxyOrigin}";
   var PROXY_PATH="${PROXY_PATH}";
@@ -216,17 +225,11 @@ function rewriteHTML(html, baseUrl) {
     return PROXY_ORIGIN+PROXY_PATH+btoa(u).replace(/\\+/g,"-").replace(/\\//g,"_").replace(/=/g,"")
   }
   
-  function getCookieValue(name) {
-    const value = document.cookie.match('(^|;)\\\\s*' + name + '\\\\s*=\\\\s*([^;]+)');
-    return value ? value.pop() : '';
-  }
-  
-  // 🆕 WebSocket プロキシ
+  // ✅ WebSocket プロキシ
   var OrigWebSocket = window.WebSocket;
   window.WebSocket = function(url, protocols) {
     console.log("[Proxy] WebSocket intercepted:", url);
     
-    // 相対URLを絶対URLに変換
     var absoluteUrl = url;
     if (url.startsWith('ws://') || url.startsWith('wss://')) {
       // すでに絶対URL
@@ -236,13 +239,10 @@ function rewriteHTML(html, baseUrl) {
     }
     
     console.log("[Proxy] WebSocket absolute URL:", absoluteUrl);
-    
-    // 注意: WebSocketはプロキシできないため、そのまま接続
-    // 将来的な改善: WebSocket用のプロキシサーバーを実装
     return new OrigWebSocket(absoluteUrl, protocols);
   };
   
-  // XHRインターセプト
+  // ✅ XHRインターセプト（同期XHR対応）
   var OrigXHR=window.XMLHttpRequest;
   window.XMLHttpRequest=function(){
     var xhr=new OrigXHR();
@@ -266,12 +266,11 @@ function rewriteHTML(html, baseUrl) {
         
         if (shouldProxy && isRelativePath) {
           finalUrl = BASE_ORIGIN + u;
-          console.log("[Proxy] XHR relative->absolute:", u.substring(0,60));
         }
       }
       
       if(shouldProxy){
-        console.log("[Proxy] XHR Intercepted:",finalUrl.substring(0,80));
+        console.log("[Proxy] XHR:",finalUrl.substring(0,80),"async="+isAsync);
         var pu=encodeProxyUrl(finalUrl);
         isProxied=true;
         return origOpen.call(this,m,pu,a,us,p)
@@ -280,8 +279,17 @@ function rewriteHTML(html, baseUrl) {
     };
     
     xhr.send=function(){
-      if(isProxied && isAsync){
-        this.withCredentials=true;
+      if(isProxied){
+        // ✅ 同期XHRの場合はwithCredentialsを設定しない
+        if(isAsync){
+          try {
+            this.withCredentials=true;
+          } catch(e) {
+            console.warn("[Proxy] Cannot set withCredentials:",e.message);
+          }
+        } else {
+          console.log("[Proxy] Sync XHR - skipping withCredentials");
+        }
       }
       return origSend.apply(this,arguments)
     };
@@ -289,7 +297,7 @@ function rewriteHTML(html, baseUrl) {
     return xhr
   };
   
-  // Fetchインターセプト
+  // ✅ Fetchインターセプト
   var origFetch=window.fetch;
   window.fetch=function(r,o){
     var u=typeof r==="string"?r:(r.url||r);
@@ -307,7 +315,6 @@ function rewriteHTML(html, baseUrl) {
       
       if (shouldProxy && isRelativePath) {
         finalUrl = BASE_ORIGIN + u;
-        console.log("[Proxy] Fetch relative->absolute:", u.substring(0,60));
       }
     }
     
@@ -365,12 +372,11 @@ function rewriteHTML(html, baseUrl) {
     html = html.replace(/<head([^>]*)>/i, '<head$1><meta charset="UTF-8">');
   }
   
-  // 🆕 base タグを削除(相対パス解決の競合を防ぐ)
+  // base タグを削除
   html = html.replace(/<base[^>]*>/gi, '');
 
   return html;
 }
-
 // ===== 6. PUPPETEER FUNCTIONS =====
 async function loadPuppeteer() {
   if (process.env.RENDER) {
