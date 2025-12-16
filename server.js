@@ -202,43 +202,24 @@ function rewriteHTML(html, baseUrl) {
   var cspMeta = '<meta http-equiv="Content-Security-Policy" content="connect-src * blob: data: ws: wss:; default-src * \'unsafe-inline\' \'unsafe-eval\' blob: data:; script-src * \'unsafe-inline\' \'unsafe-eval\' blob:; frame-src * blob: data:;">';
   
   // 11. ✅ インターセプトスクリプト（元のバージョン + エラーロギング強化）
-  var earlyScript = `<script>
+ var earlyScript = `<script>
 (function(){
-  console.log("[Proxy] Enhanced intercept v7 - Debug mode");
+  console.log("[Proxy] Enhanced intercept v5 - WebSocket support");
   
   var PROXY_ORIGIN="${proxyOrigin}";
   var PROXY_PATH="${PROXY_PATH}";
   var BASE_ORIGIN="${origin}";
   
-  // ✅ エラーカウンター
-  var errorCount = {
-    syncXHR: 0,
-    withCredentials: 0,
-    other: 0
-  };
-  
   function encodeProxyUrl(u){
     return PROXY_ORIGIN+PROXY_PATH+btoa(u).replace(/\\+/g,"-").replace(/\\//g,"_").replace(/=/g,"")
   }
   
-  // ✅ グローバルエラーハンドラー
-  window.addEventListener('error', function(e) {
-    if (e.message && e.message.includes('timeout') && e.message.includes('XMLHttpRequest')) {
-      errorCount.syncXHR++;
-      console.error("[Proxy] Sync XHR Error caught (#" + errorCount.syncXHR + "):", e.message);
-      console.error("[Proxy] Error stack:", e.error ? e.error.stack : 'no stack');
-      e.preventDefault(); // エラーを抑制
-    }
-  }, true);
+  function getCookieValue(name) {
+    const value = document.cookie.match('(^|;)\\\\s*' + name + '\\\\s*=\\\\s*([^;]+)');
+    return value ? value.pop() : '';
+  }
   
-  window.addEventListener('unhandledrejection', function(e) {
-    if (e.reason && e.reason.toString().includes('timeout')) {
-      console.error("[Proxy] Promise rejection (timeout):", e.reason);
-      e.preventDefault();
-    }
-  });
-  
-  // ✅ WebSocket プロキシ
+  // WebSocket プロキシ
   var OrigWebSocket = window.WebSocket;
   window.WebSocket = function(url, protocols) {
     console.log("[Proxy] WebSocket intercepted:", url);
@@ -251,41 +232,21 @@ function rewriteHTML(html, baseUrl) {
       absoluteUrl = wsProto + '//' + BASE_ORIGIN.replace(/^https?:\\/\\//, '') + url;
     }
     
+    console.log("[Proxy] WebSocket absolute URL:", absoluteUrl);
     return new OrigWebSocket(absoluteUrl, protocols);
   };
   
-  // ✅ XHRインターセプト（元のバージョン + デバッグ）
+  // XHRインターセプト
   var OrigXHR=window.XMLHttpRequest;
-  var xhrCounter = 0;
-  
   window.XMLHttpRequest=function(){
     var xhr=new OrigXHR();
-    var xhrId = ++xhrCounter;
     var origOpen=xhr.open;
     var origSend=xhr.send;
-    var origSetTimeout=Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype, 'timeout').set;
     var isProxied=false;
     var isAsync=true;
-    var requestUrl='';
-    
-    // ✅ timeout プロパティをオーバーライド
-    Object.defineProperty(xhr, 'timeout', {
-      set: function(value) {
-        if (!isAsync && value > 0) {
-          console.warn("[Proxy] XHR#" + xhrId + " Prevented timeout=" + value + " on sync request to:", requestUrl.substring(0, 60));
-          errorCount.withCredentials++;
-          return; // 同期XHRにはタイムアウトを設定しない
-        }
-        origSetTimeout.call(this, value);
-      },
-      get: function() {
-        return Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype, 'timeout').get.call(this);
-      }
-    });
     
     xhr.open=function(m,u,a,us,p){
       isAsync = (a === undefined || a === true);
-      requestUrl = u;
       
       var shouldProxy = false;
       var finalUrl = u;
@@ -299,36 +260,30 @@ function rewriteHTML(html, baseUrl) {
         
         if (shouldProxy && isRelativePath) {
           finalUrl = BASE_ORIGIN + u;
+          console.log("[Proxy] XHR relative->absolute:", u.substring(0,60));
         }
       }
       
       if(shouldProxy){
-        console.log("[Proxy] XHR#" + xhrId + ":",finalUrl.substring(0,60),"async=" + isAsync);
+        console.log("[Proxy] XHR Intercepted:",finalUrl.substring(0,80));
         var pu=encodeProxyUrl(finalUrl);
         isProxied=true;
-        requestUrl = finalUrl;
         return origOpen.call(this,m,pu,a,us,p)
       }
       return origOpen.call(this,m,u,a,us,p)
     };
     
     xhr.send=function(){
-      // ✅ 元のバージョン（動いていたコード）
       if(isProxied && isAsync){
         this.withCredentials=true;
       }
-      
-      if(isProxied && !isAsync){
-        console.warn("[Proxy] XHR#" + xhrId + " Sync request to:", requestUrl.substring(0, 60));
-      }
-      
       return origSend.apply(this,arguments)
     };
     
     return xhr
   };
   
-  // ✅ Fetchインターセプト
+  // Fetchインターセプト
   var origFetch=window.fetch;
   window.fetch=function(r,o){
     var u=typeof r==="string"?r:(r.url||r);
@@ -346,11 +301,12 @@ function rewriteHTML(html, baseUrl) {
       
       if (shouldProxy && isRelativePath) {
         finalUrl = BASE_ORIGIN + u;
+        console.log("[Proxy] Fetch relative->absolute:", u.substring(0,60));
       }
     }
     
     if(shouldProxy){
-      console.log("[Proxy] Fetch:",finalUrl.substring(0,80));
+      console.log("[Proxy] Fetch intercepted:",finalUrl.substring(0,80));
       var pu=encodeProxyUrl(finalUrl);
       var newOpts=Object.assign({},o||{});
       newOpts.credentials="include";
@@ -383,15 +339,7 @@ function rewriteHTML(html, baseUrl) {
     };
   }
   
-  // ✅ 5秒後にエラー統計を表示
-  setTimeout(function() {
-    console.log("[Proxy] Error statistics:");
-    console.log("  - Sync XHR errors prevented:", errorCount.syncXHR);
-    console.log("  - withCredentials issues:", errorCount.withCredentials);
-    console.log("  - Other errors:", errorCount.other);
-  }, 5000);
-  
-  console.log("[Proxy] Intercept initialized with error prevention");
+  console.log("[Proxy] Enhanced intercept initialized");
 })();
 </script>`;
   
